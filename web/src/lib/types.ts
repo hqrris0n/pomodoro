@@ -37,7 +37,7 @@ export type Drink = {
 export type SoundChannel = {
   id: string;
   name: string;
-  /** Audio file name inside public/sounds/, e.g. "rain.m4a". */
+  /** Audio file name inside public/sounds/, e.g. "rain.mp3". */
   file: string;
 };
 

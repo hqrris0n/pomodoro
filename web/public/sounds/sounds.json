@@ -1,0 +1,12 @@
+[
+  { "id": "chatter", "name": "Chatter", "file": "chatter.mp3" },
+  { "id": "espresso", "name": "Espresso machine", "file": "espresso.mp3" },
+  { "id": "dishes", "name": "Cups and dishes", "file": "dishes.mp3" },
+  { "id": "rain", "name": "Rain", "file": "rain.mp3" },
+  { "id": "fireplace", "name": "Fireplace", "file": "fireplace.mp3" },
+  { "id": "street", "name": "Street outside", "file": "street.mp3" },
+  { "id": "pages", "name": "Pages turning", "file": "pages.mp3" },
+  { "id": "typing", "name": "Keyboard typing", "file": "typing.mp3" },
+  { "id": "wind", "name": "Soft wind", "file": "wind.mp3" },
+  { "id": "hum", "name": "Café hum", "file": "hum.mp3" }
+]
