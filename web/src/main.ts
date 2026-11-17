@@ -1,6 +1,6 @@
 import { mount, type Component } from 'svelte';
 import './styles/global.css';
-import App from './App.svelte';
+import { profileSync } from './lib/profiles/sync';
 
 const target = document.getElementById('app')!;
 
@@ -17,4 +17,15 @@ async function demoComponent(): Promise<Component | null> {
   return path ? (await demos[path]()).default : null;
 }
 
-demoComponent().then((Demo) => mount(Demo ?? App, { target }));
+// The signed-in user's profile is fetched (briefly) and written to storage
+// before App is imported, because every store reads storage when its module
+// loads. install() comes first too, so saves made while stores start up sync.
+async function start() {
+  await profileSync.bootstrap();
+  profileSync.install();
+  const Demo = await demoComponent();
+  const App = Demo ?? (await import('./App.svelte')).default;
+  mount(App, { target });
+}
+
+void start();

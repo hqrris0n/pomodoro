@@ -2,8 +2,8 @@
 
 The app is local-first: a timer runs entirely in the browser and keeps working
 if the server is unreachable. The server only lets people see and join each
-other's timers. It keeps everything in memory; a restart empties it and
-clients re-create their rooms.
+other's timers. It keeps rooms in memory; a restart empties them and
+clients re-create their rooms. Profiles are the exception (see below).
 
 Transport: JSON over HTTP `POST`/`PATCH` for commands, one Server-Sent Events
 stream per client for updates. Go standard library only.
@@ -121,6 +121,58 @@ whatever their roles. Notes are not part of `Room` or `RoomSummary`.
   queue is discarded when the member leaves the room or the room is removed.
   Notes are held in memory only. Keeping a note on screen until dismissed is
   the client's job.
+
+## Profiles
+
+A profile stores a display name and a bag of settings under a username, so the
+same user gets the same settings on every device. There are no passwords:
+anyone who can reach the server can read, replace or delete any profile. The
+client decides which keys go in `settings`; the server treats it as opaque.
+
+```ts
+type Profile = {
+  username: string;    // as first created; cannot be renamed
+  displayName: string;
+  settings: Record<string, unknown>; // any JSON object
+  updatedAt: number;   // server epoch ms
+};
+```
+
+| Method and path                | Body                                     | Success |
+| ------------------------------ | ---------------------------------------- | ------- |
+| `GET /profiles`                | —                                        | `200 {profiles: {username, displayName}[]}`, sorted by username ignoring case. |
+| `GET /profiles/{username}`     | —                                        | `200 Profile`. 404 `no such profile`. |
+| `POST /profiles`               | `{username, displayName?, settings}`     | `201 Profile`. `displayName` defaults to the trimmed username. 409 `that username is taken`; 429 `too many profiles`. |
+| `PUT /profiles/{username}`     | `{displayName, settings}` (both required) | `200 {updatedAt}`. Replaces both. 404 if missing. |
+| `DELETE /profiles/{username}`  | —                                        | `200 {}`. 404 if missing. |
+
+All of these need the `Authorization: Bearer <token>` header and count toward
+the same per-token rate limit as commands.
+
+- Usernames are trimmed and must be 1 to 24 Unicode code points with no
+  control characters (400 otherwise). Uniqueness and lookup ignore case
+  (`Ada` and `ada` are the same user); the username as first created is the
+  one returned. `displayName` follows the same rule as room names.
+- `settings` must be a JSON object (`null`, arrays and strings are 400
+  `settings must be a JSON object`). It is stored compacted and returned as
+  stored. Over 256 KB (262144 bytes) compacted is 400 `settings too large`.
+  `POST` and `PUT` bodies may be up to 260 KB; other requests are limited to
+  4 KB as usual.
+- At most 20 profiles.
+- `updatedAt` is the server time of the last change and strictly increases for
+  a profile, so clients can compare it.
+
+Unlike rooms, profiles are persistent. They live in one file,
+`profiles.json`, in the data directory (`DATA_DIR` or `-data`, `/data` in the
+container): `{"version":1,"profiles":[{username, displayName, settings, updatedAt}, …]}`.
+Every successful create, replace or delete rewrites it by writing a temporary
+file in the same directory, syncing it and renaming it over the old one. If
+that fails the change is rolled back and the request is 500
+`could not save profiles`. A missing file is an empty store. If the file or
+directory cannot be read, or the file is corrupt (invalid JSON, wrong shape,
+usernames that collide ignoring case), the server logs it, leaves the file
+untouched and answers every `/profiles` request with 503
+`profiles are unavailable` until it is fixed and the server restarted.
 
 ## Lifecycle rules
 

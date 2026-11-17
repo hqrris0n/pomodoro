@@ -21,9 +21,9 @@ func envOr(key, fallback string) string {
 }
 
 // newHandler combines the API and the static site on one mux.
-func newHandler(h *hub, staticDir string) http.Handler {
+func newHandler(h *hub, p *profileStore, staticDir string) http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle("/api/", newAPI(h))
+	mux.Handle("/api/", newAPI(h, p))
 	mux.Handle("/", staticHandler(os.DirFS(staticDir)))
 	return mux
 }
@@ -31,9 +31,11 @@ func newHandler(h *hub, staticDir string) http.Handler {
 func main() {
 	port := flag.String("port", envOr("PORT", "8080"), "listen port (env PORT)")
 	static := flag.String("static", envOr("STATIC_DIR", "./public"), "static files directory (env STATIC_DIR)")
+	data := flag.String("data", envOr("DATA_DIR", "./data"), "data directory for profiles.json (env DATA_DIR)")
 	flag.Parse()
 
 	h := newHub(time.Now, log.Printf)
+	profiles := openProfiles(*data, time.Now, log.Printf)
 	stop := make(chan struct{})
 	go h.runJanitor(5*time.Second, stop)
 
@@ -41,7 +43,7 @@ func main() {
 	// WriteTimeout because it would cut off long-lived SSE streams.
 	srv := &http.Server{
 		Addr:              ":" + *port,
-		Handler:           newHandler(h, *static),
+		Handler:           newHandler(h, profiles, *static),
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       2 * time.Minute,
 	}

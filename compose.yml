@@ -16,12 +16,22 @@ services:
     # Without a shared proxy network, publish the port on the host instead:
     # ports: ['127.0.0.1:8090:8080']
     #
+    # /data holds profiles.json and is the only writable path (the rest of
+    # the filesystem is read-only). A named volume works out of the box. To
+    # keep it in a folder on a NAS instead, use a host path; that folder must
+    # be writable by uid 65534 (for example `chown 65534:65534 <folder>`):
+    #   - /volume1/docker/cafe/data:/data
+    #
     # To edit the drink menu or swap sounds without rebuilding the image,
-    # mount your own folders over the built-in ones:
-    # volumes:
+    # also mount your own folders over the built-in ones:
     #   - ./web/public/drinks:/public/drinks:ro
     #   - ./web/public/sounds:/public/sounds:ro
+    volumes:
+      - cafe-data:/data
     networks: [proxy]
+
+volumes:
+  cafe-data:
 
 networks:
   # The network your reverse proxy container is attached to.

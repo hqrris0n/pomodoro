@@ -3,7 +3,8 @@
   import { backgrounds } from '../backgrounds/backgrounds.svelte';
   import Mixer from '../audio/Mixer.svelte';
   import { clock } from '../clock/clock.svelte';
-  import { identity } from './identity.svelte';
+  import { profiles } from '../profiles/profiles.svelte';
+  import { identity, randomName } from './identity.svelte';
   import IconClose from './icons/IconClose.svelte';
   import Toggle from './Toggle.svelte';
 
@@ -31,6 +32,20 @@
   let nameInput: HTMLInputElement | undefined = $state();
   let nameDraft = $state(identity.name);
   let nameError = $state(false);
+  const NEW_USER = '\u0000new';
+  let adding = $state(false);
+  let newUserInput: HTMLInputElement | undefined = $state();
+  let newUserDraft = $state('');
+  let userError = $state<string | null>(null);
+  let confirmingDelete = $state(false);
+  let deleteError = $state<string | null>(null);
+
+  // Saved users, with the signed-in one even when the list could not be fetched.
+  const userOptions = $derived.by(() => {
+    const names = profiles.users.map((u) => u.username);
+    if (profiles.current && !names.includes(profiles.current)) names.unshift(profiles.current);
+    return names;
+  });
   let previous: HTMLElement | null = null;
   let wasOpen = false;
 
@@ -41,6 +56,11 @@
       previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
       nameDraft = identity.name;
       nameError = false;
+      adding = false;
+      userError = null;
+      confirmingDelete = false;
+      deleteError = null;
+      void profiles.refreshUsers();
       void tick().then(() => closeButton?.focus());
     } else {
       previous?.focus();
@@ -56,6 +76,59 @@
     if (identity.setName(nameDraft)) nameError = false;
     else nameError = true;
     nameDraft = identity.name;
+  }
+
+  function rollName() {
+    identity.setName(randomName());
+    nameDraft = identity.name;
+    nameError = false;
+  }
+
+  async function onUserChange(e: Event & { currentTarget: HTMLSelectElement }) {
+    const select = e.currentTarget;
+    const value = select.value;
+    userError = null;
+    confirmingDelete = false;
+    if (value === NEW_USER) {
+      adding = true;
+      newUserDraft = '';
+      await tick();
+      newUserInput?.focus();
+      return;
+    }
+    adding = false;
+    if (value) userError = await profiles.signIn(value);
+    // A failed or no-op choice puts the dropdown back on the signed-in user.
+    select.value = profiles.current ?? '';
+  }
+
+  async function addUser() {
+    const value = newUserDraft.trim();
+    if (!value) {
+      adding = false;
+      return;
+    }
+    userError = await profiles.signIn(value);
+    if (!userError) adding = false;
+  }
+
+  function onNewUserKey(e: KeyboardEvent) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      void addUser();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      adding = false;
+      userError = null;
+    }
+  }
+
+  async function deleteUser() {
+    const user = profiles.current;
+    if (!user) return;
+    deleteError = await profiles.remove(user);
+    if (!deleteError) confirmingDelete = false;
   }
 
   function onNameKey(e: KeyboardEvent) {
@@ -162,11 +235,56 @@
     <section aria-labelledby="you-heading">
       <h3 id="you-heading">You</h3>
       <label class="field">
-        <span>Your name</span>
+        <span>User</span>
+        <span class="sub">Your settings and to-dos follow you to any device.</span>
+        <select
+          value={adding ? NEW_USER : (profiles.current ?? '')}
+          disabled={!profiles.reachable || profiles.busy}
+          aria-describedby={userError ? 'user-error' : undefined}
+          onchange={onUserChange}
+        >
+          {#if !profiles.current}<option value="">This device only</option>{/if}
+          {#each userOptions as name (name)}
+            <option value={name}>{name}</option>
+          {/each}
+          <option value={NEW_USER}>Add new user</option>
+        </select>
+      </label>
+      {#if !profiles.reachable}
+        <p class="note">Can't reach the café right now.</p>
+      {/if}
+      {#if adding}
+        <label class="field">
+          <span>New username</span>
+          <span class="sub">Press Enter to add it. It can't be changed later.</span>
+          <input
+            bind:this={newUserInput}
+            bind:value={newUserDraft}
+            type="text"
+            maxlength="24"
+            autocomplete="off"
+            autocapitalize="off"
+            spellcheck="false"
+            disabled={profiles.busy}
+            onkeydown={onNewUserKey}
+          />
+        </label>
+      {/if}
+      {#if userError}<p id="user-error" class="error" role="alert">{userError}</p>{/if}
+      {#if profiles.status === 'waiting'}
+        <p class="note">Your settings switch over when this timer ends.</p>
+      {:else if profiles.current && profiles.status === 'offline'}
+        <p class="sub">Saved on this device. The café gets your changes when it's back.</p>
+      {/if}
+      <label class="field" for="display-name">
+        <span>Display name</span>
         <span class="sub">Shown to others in the list of timers.</span>
+      </label>
+      <div class="name-row">
         <input
           bind:this={nameInput}
           bind:value={nameDraft}
+          id="display-name"
           type="text"
           maxlength="24"
           autocomplete="off"
@@ -175,7 +293,23 @@
           onblur={commitName}
           onkeydown={onNameKey}
         />
-      </label>
+        <button type="button" class="btn icon" aria-label="Random name" onclick={rollName}>
+          <svg
+            viewBox="0 0 8 8"
+            width="24"
+            height="24"
+            shape-rendering="crispEdges"
+            aria-hidden="true"
+          >
+            <rect x="0" y="0" width="8" height="8" class="die" />
+            <rect x="1" y="1" width="6" height="6" class="face" />
+            <rect x="2" y="2" width="1" height="1" class="die" />
+            <rect x="5" y="2" width="1" height="1" class="die" />
+            <rect x="2" y="5" width="1" height="1" class="die" />
+            <rect x="5" y="5" width="1" height="1" class="die" />
+          </svg>
+        </button>
+      </div>
       {#if nameError}<p id="name-error" class="error" role="alert">Enter a name.</p>{/if}
       <Toggle
         checked={identity.visible}
@@ -193,6 +327,36 @@
         onchange={(on) => void identity.setNotify(on)}
       />
       {#if identity.notifyError}<p class="error" role="alert">{identity.notifyError}</p>{/if}
+    </section>
+
+    <section class="danger" aria-label="Delete user">
+      {#if confirmingDelete && profiles.current}
+        <p role="alert">
+          Delete {profiles.displayNameOf(profiles.current)}? Their settings are removed on every
+          device.
+        </p>
+        <div class="confirm">
+          <button type="button" class="btn" onclick={() => (confirmingDelete = false)}>
+            Cancel
+          </button>
+          <button type="button" class="btn delete" disabled={profiles.busy} onclick={deleteUser}>
+            Delete
+          </button>
+        </div>
+      {:else}
+        <button
+          type="button"
+          class="btn delete"
+          disabled={!profiles.current || profiles.busy}
+          onclick={() => {
+            deleteError = null;
+            confirmingDelete = true;
+          }}
+        >
+          Delete user
+        </button>
+      {/if}
+      {#if deleteError}<p class="error" role="alert">{deleteError}</p>{/if}
     </section>
   </div>
 {/if}
@@ -344,5 +508,58 @@
   .error {
     margin: 0;
     color: var(--berry);
+  }
+
+  .name-row {
+    display: flex;
+    gap: var(--s1);
+    margin-top: calc(var(--s1) * -1);
+  }
+
+  .name-row input {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .name-row .icon {
+    flex: none;
+  }
+
+  .die {
+    fill: var(--ink);
+  }
+
+  .face {
+    fill: var(--white);
+  }
+
+  /* Last thing in the panel, pushed to the bottom when there is room. */
+  .danger {
+    margin-top: auto;
+    padding-top: var(--s3);
+    border-top: 1px dashed var(--plum);
+  }
+
+  .danger p {
+    margin: 0;
+  }
+
+  .confirm {
+    display: flex;
+    gap: var(--s2);
+  }
+
+  .confirm .btn {
+    flex: 1;
+  }
+
+  .btn.delete:not(:disabled) {
+    background: var(--berry);
+    color: var(--white);
+  }
+
+  .btn.delete:hover:not(:disabled) {
+    background: var(--strawberry);
+    color: var(--ink);
   }
 </style>

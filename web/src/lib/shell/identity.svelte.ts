@@ -31,7 +31,8 @@ function newToken(): string {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-function randomName(): string {
+/** A random "adjective animal" display name. */
+export function randomName(): string {
   return `${ADJECTIVES[randomIndex(ADJECTIVES.length)]} ${ANIMALS[randomIndex(ANIMALS.length)]}`;
 }
 

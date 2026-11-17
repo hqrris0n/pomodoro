@@ -12,8 +12,8 @@ const maxBodyBytes = 4 << 10
 
 // newAPI returns the /api routes. Unknown /api paths answer 404 JSON and never
 // fall through to the static files.
-func newAPI(h *hub) http.Handler {
-	a := &api{h: h}
+func newAPI(h *hub, p *profileStore) http.Handler {
+	a := &api{h: h, p: p}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, "ok\n")
@@ -26,13 +26,21 @@ func newAPI(h *hub) http.Handler {
 	mux.HandleFunc("POST /api/rooms/{id}/role", a.command(a.setRole))
 	mux.HandleFunc("POST /api/rooms/{id}/notes", a.command(a.note))
 	mux.HandleFunc("PUT /api/me", a.command(a.rename))
+	mux.HandleFunc("GET /api/profiles", a.command(a.listProfiles))
+	mux.HandleFunc("GET /api/profiles/{username}", a.command(a.getProfile))
+	mux.HandleFunc("POST /api/profiles", a.commandLimit(profileBodyBytes, a.createProfile))
+	mux.HandleFunc("PUT /api/profiles/{username}", a.commandLimit(profileBodyBytes, a.putProfile))
+	mux.HandleFunc("DELETE /api/profiles/{username}", a.command(a.deleteProfile))
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, 404, map[string]string{"error": "not found"})
 	})
 	return mux
 }
 
-type api struct{ h *hub }
+type api struct {
+	h *hub
+	p *profileStore
+}
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	b, _ := json.Marshal(v)
@@ -65,13 +73,18 @@ type commandFunc func(w http.ResponseWriter, r *http.Request, token string) erro
 // command wraps a handler with token validation, rate limiting and error output.
 // The rate limit is charged before the body is parsed so malformed requests count.
 func (a *api) command(f commandFunc) http.HandlerFunc {
+	return a.commandLimit(maxBodyBytes, f)
+}
+
+// commandLimit is command with a custom request body size limit.
+func (a *api) commandLimit(limit int64, f commandFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		token, err := bearerToken(r)
 		if err == nil {
 			err = a.h.Allow(token)
 		}
 		if err == nil {
-			r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+			r.Body = http.MaxBytesReader(w, r.Body, limit)
 			err = f(w, r, token)
 		}
 		if err != nil {

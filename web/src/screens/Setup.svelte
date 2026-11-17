@@ -2,6 +2,7 @@
   import ClockTime from '../lib/clock/ClockTime.svelte';
   import { clock } from '../lib/clock/clock.svelte';
   import DrinkPicker from '../lib/drinks/DrinkPicker.svelte';
+  import OrderFor from '../lib/profiles/OrderFor.svelte';
   import TodoList from '../lib/todos/TodoList.svelte';
   import { timer } from '../lib/timer/engine.svelte';
   import DurationField from './setup/DurationField.svelte';
@@ -31,6 +32,7 @@
   <div class="tear" aria-hidden="true"></div>
 
   <div class="receipt">
+    <OrderFor />
     <TodoList />
   </div>
 </main>

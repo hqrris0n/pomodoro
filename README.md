@@ -24,7 +24,10 @@ drink is ready and so are you.
   Owners can promote a guest to co-owner. If the owner leaves, the timer keeps
   going and the longest-standing guest takes over.
 
-There are no accounts. Settings, to-dos and saved mixes live in your browser.
+There are no passwords. Pick or create a username and your settings are saved
+under it on the server, so you get the same ones on every device; anyone who
+can open the site can pick or delete any user. Without a username everything
+still works locally: settings, to-dos and saved mixes live in your browser.
 
 ## How it is built
 
@@ -45,8 +48,13 @@ With Docker:
 
 ```sh
 docker build -t cafe-timer .
-docker run --rm -p 8080:8080 cafe-timer
+docker run --rm -p 8080:8080 -v cafe-data:/data cafe-timer
 ```
+
+Profiles are saved in `profiles.json` under `DATA_DIR` (`/data` in the
+container, `./data` when running the binary directly). Without the `-v` the
+profiles are lost when the container is removed. A host folder works too, if
+uid 65534 can write to it.
 
 Then open <http://localhost:8080>. `compose.yml` is set up for running behind
 a reverse proxy on a shared Docker network, and

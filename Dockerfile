@@ -16,11 +16,16 @@ WORKDIR /src
 COPY server/ ./
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
     go build -trimpath -ldflags="-s -w" -o /cafe .
+# An empty data directory to copy into the scratch image (it has no mkdir).
+RUN mkdir -p /out/data
 
 FROM scratch
 COPY --from=server /cafe /cafe
 COPY --from=web /web/dist /public
-ENV PORT=8080 STATIC_DIR=/public
+# Profiles live in /data. Owned by the runtime user so a fresh named volume,
+# which copies this ownership, is writable.
+COPY --from=server --chown=65534:65534 /out/data /data
+ENV PORT=8080 STATIC_DIR=/public DATA_DIR=/data
 # Keep the Go runtime's heap small; the server holds a few kilobytes of state.
 ENV GOMEMLIMIT=24MiB
 USER 65534:65534
