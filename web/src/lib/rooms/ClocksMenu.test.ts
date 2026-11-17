@@ -42,6 +42,7 @@ function fake(over: Record<string, unknown> = {}) {
     join: vi.fn(async () => {}),
     leave: vi.fn(async () => {}),
     setRole: vi.fn(async () => {}),
+    sendNote: vi.fn(async (): Promise<string | null> => null),
     ...over,
   };
 }
@@ -166,5 +167,70 @@ describe('ClocksMenu', () => {
     openMenu(fake({ online: false, error: 'That timer has ended.' }));
     expect(screen.getByText(/Can't reach the café right now/)).toBeInTheDocument();
     expect(screen.getByRole('alert')).toHaveTextContent('That timer has ended.');
+  });
+
+  describe('sticky notes', () => {
+    const withMembers = (over: Record<string, unknown> = {}) =>
+      fake({
+        role: 'host',
+        room: room([m('me', 'Vanilla Hare', 'host'), m('v1', 'Maple Wren', 'guest')]),
+        ...over,
+      });
+
+    it('offers a note button for other members only', () => {
+      openMenu(withMembers());
+      expect(
+        screen.getByRole('button', { name: 'Write a note to Maple Wren' }),
+      ).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Write a note to Vanilla Hare' })).toBeNull();
+    });
+
+    it('counts characters and disables Send while blank', async () => {
+      openMenu(withMembers());
+      await fireEvent.click(screen.getByRole('button', { name: 'Write a note to Maple Wren' }));
+      const box = screen.getByRole('textbox');
+      expect(box).toHaveAttribute('maxlength', '140');
+      expect(screen.getByText('0/140')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
+      await fireEvent.input(box, { target: { value: '   ' } });
+      expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
+      await fireEvent.input(box, { target: { value: 'hi there' } });
+      expect(screen.getByText('8/140')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Send' })).toBeEnabled();
+    });
+
+    it('sends, closes the composer and shows Note sent', async () => {
+      const store = withMembers();
+      openMenu(store);
+      await fireEvent.click(screen.getByRole('button', { name: 'Write a note to Maple Wren' }));
+      await fireEvent.input(screen.getByRole('textbox'), { target: { value: ' hi ' } });
+      await fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+      expect(store.sendNote).toHaveBeenCalledExactlyOnceWith('v1', 'hi');
+      expect(await screen.findByText('Note sent')).toBeInTheDocument();
+      expect(screen.queryByRole('textbox')).toBeNull();
+    });
+
+    it('shows an error and keeps the text', async () => {
+      const store = withMembers({ sendNote: vi.fn(async () => "They've left this timer.") });
+      openMenu(store);
+      await fireEvent.click(screen.getByRole('button', { name: 'Write a note to Maple Wren' }));
+      await fireEvent.input(screen.getByRole('textbox'), { target: { value: 'hi' } });
+      await fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+      expect(await screen.findByText("They've left this timer.")).toBeInTheDocument();
+      expect(screen.getByRole('textbox')).toHaveValue('hi');
+    });
+
+    it('cancels with the button and with Escape, without closing the menu', async () => {
+      openMenu(withMembers());
+      const open = () =>
+        fireEvent.click(screen.getByRole('button', { name: 'Write a note to Maple Wren' }));
+      await open();
+      await fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+      expect(screen.queryByRole('textbox')).toBeNull();
+      await open();
+      await fireEvent.keyDown(window, { key: 'Escape' });
+      expect(screen.queryByRole('textbox')).toBeNull();
+      expect(screen.getByRole('region', { name: 'Other timers' })).toBeInTheDocument();
+    });
   });
 });

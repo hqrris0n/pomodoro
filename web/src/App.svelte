@@ -7,6 +7,7 @@
   import { backgrounds } from './lib/backgrounds/backgrounds.svelte';
   import { installMixLinks } from './lib/audio/links.svelte';
   import { sound } from './lib/audio/mixes.svelte';
+  import NoteStack from './lib/notes/NoteStack.svelte';
   import ClocksMenu from './lib/rooms/ClocksMenu.svelte';
   import { rooms } from './lib/rooms/rooms.svelte';
   import { timer } from './lib/timer/engine.svelte';
@@ -57,6 +58,7 @@
     <Timer onleave={leave} locked={rooms.locked} {lockedBy} />
   {/if}
 </div>
+<NoteStack />
 <SettingsPanel bind:open={settingsOpen} locked={rooms.locked} {lockedBy} />
 
 <style>

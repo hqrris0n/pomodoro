@@ -270,8 +270,8 @@ export class SoundStore {
   }
 
   /** Play a short effect from sounds/<name>.mp3; follows master volume and mute, not `enabled`. */
-  effect(name: string): Promise<void> {
-    return this.engine.playChime(`${import.meta.env.BASE_URL}sounds/${name}.mp3`);
+  effect(name: string, gain = 1): Promise<void> {
+    return this.engine.playChime(`${import.meta.env.BASE_URL}sounds/${name}.mp3`, gain);
   }
 
   chime(): Promise<void> {

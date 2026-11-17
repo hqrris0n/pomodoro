@@ -191,6 +191,19 @@ describe('AudioEngine', () => {
     expect(ctx.gains[1].gain.calls.at(-1)).toBe(0);
   });
 
+  it('plays a chime through its own gain when a gain is given', async () => {
+    const { ctx, engine } = setup();
+    await engine.unlock();
+    const before = ctx.gains.length;
+    await engine.playChime('/page.mp3', 0.5);
+    expect(ctx.sources).toHaveLength(1);
+    expect(ctx.gains).toHaveLength(before + 1);
+    const g = ctx.gains[before];
+    expect(g.gain.value).toBe(0.5);
+    expect(ctx.sources[0].connected).toBe(g);
+    expect(g.connected).toBe(ctx.gains[1]);
+  });
+
   it('resumes a suspended context when the page becomes visible', async () => {
     const { ctx, engine } = setup();
     await engine.unlock();

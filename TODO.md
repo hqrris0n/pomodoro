@@ -15,6 +15,6 @@
 - [x] Let each user edit the preset mixes
 - [x] Rename "Café timer" to "Pomo Café"
 - [x] Page-turn sound when the to-do list opens or closes
-- [ ] Sticky notes to people in the same room
+- [x] Sticky notes to people in the same room
 - [x] Fix: the timer starts by itself after clicking Leave
 - [x] Make the disabled Pause button for guests clearly disabled

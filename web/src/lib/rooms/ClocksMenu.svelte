@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { drinks } from '../drinks/drinks.svelte';
+  import IconNote from '../notes/IconNote.svelte';
   import IconPeople from '../shell/icons/IconPeople.svelte';
   import { timer } from '../timer/engine.svelte';
   import { formatClock, snapshot } from '../timer/schedule';
@@ -23,6 +24,7 @@
     | 'join'
     | 'leave'
     | 'setRole'
+    | 'sendNote'
   >;
 
   let { store = rooms, startOpen = false }: { store?: Store; startOpen?: boolean } = $props();
@@ -34,6 +36,43 @@
   let wrap: HTMLDivElement | undefined = $state();
   let button: HTMLButtonElement | undefined = $state();
 
+  const MAX_NOTE = 140;
+  let composeId = $state<string | null>(null);
+  let draft = $state('');
+  let noteError = $state<string | null>(null);
+  let sending = $state(false);
+  let sentTo = $state<string | null>(null);
+  let sentTimer: ReturnType<typeof setTimeout> | undefined;
+
+  function openComposer(id: string) {
+    composeId = composeId === id ? null : id;
+    draft = '';
+    noteError = null;
+  }
+
+  function closeComposer() {
+    composeId = null;
+    draft = '';
+    noteError = null;
+  }
+
+  async function sendNote(id: string, name: string) {
+    const text = draft.trim();
+    if (!text || sending) return;
+    sending = true;
+    noteError = null;
+    const err = await store.sendNote(id, text);
+    sending = false;
+    if (err) {
+      noteError = err;
+      return;
+    }
+    closeComposer();
+    sentTo = name;
+    clearTimeout(sentTimer);
+    sentTimer = setTimeout(() => (sentTo = null), 2000);
+  }
+
   const count = $derived(store.list.length);
   const members = $derived(store.room?.members ?? []);
   const showMembers = $derived(members.length > 1);
@@ -42,17 +81,23 @@
 
   onMount(() => {
     void drinks.load();
+    return () => clearTimeout(sentTimer);
   });
 
   $effect(() => {
     if (!open) {
       confirmId = null;
+      closeComposer();
       return;
     }
     now = Date.now();
     const tick = setInterval(() => (now = Date.now()), 1000);
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
+        if (composeId) {
+          closeComposer();
+          return;
+        }
         open = false;
         button?.focus();
       }
@@ -121,31 +166,71 @@
           <ul>
             {#each members as m (m.id)}
               <li class="member">
-                <span class="who">
-                  <span class="name">{m.name}</span>
-                  {#if m.id === store.me}<span class="tag">(you)</span>{/if}
-                  <span class="tag">· {ROLE_LABEL[m.role]}</span>
-                </span>
-                {#if store.role === 'host' && m.id !== store.me && m.role === 'guest'}
-                  <button
-                    type="button"
-                    class="btn small"
-                    onclick={() => store.setRole(m.id, 'cohost')}
-                  >
-                    Promote
-                  </button>
-                {:else if store.role === 'host' && m.id !== store.me && m.role === 'cohost'}
-                  <button
-                    type="button"
-                    class="btn small"
-                    onclick={() => store.setRole(m.id, 'guest')}
-                  >
-                    Demote
-                  </button>
+                <div class="row">
+                  <span class="who">
+                    <span class="name">{m.name}</span>
+                    {#if m.id === store.me}<span class="tag">(you)</span>{/if}
+                    <span class="tag">· {ROLE_LABEL[m.role]}</span>
+                  </span>
+                  {#if store.role === 'host' && m.id !== store.me && m.role === 'guest'}
+                    <button
+                      type="button"
+                      class="btn small"
+                      onclick={() => store.setRole(m.id, 'cohost')}
+                    >
+                      Promote
+                    </button>
+                  {:else if store.role === 'host' && m.id !== store.me && m.role === 'cohost'}
+                    <button
+                      type="button"
+                      class="btn small"
+                      onclick={() => store.setRole(m.id, 'guest')}
+                    >
+                      Demote
+                    </button>
+                  {/if}
+                  {#if m.id !== store.me}
+                    <button
+                      type="button"
+                      class="btn small note-btn"
+                      aria-label="Write a note to {m.name}"
+                      aria-expanded={composeId === m.id}
+                      onclick={() => openComposer(m.id)}
+                    >
+                      <IconNote size={24} />
+                    </button>
+                  {/if}
+                </div>
+                {#if composeId === m.id}
+                  <div class="composer">
+                    <!-- svelte-ignore a11y_autofocus -->
+                    <textarea
+                      rows="3"
+                      maxlength={MAX_NOTE}
+                      aria-label="Note to {m.name}"
+                      autofocus
+                      bind:value={draft}></textarea>
+                    <div class="count" aria-live="off">{draft.length}/{MAX_NOTE}</div>
+                    {#if noteError}<p class="error" role="alert">{noteError}</p>{/if}
+                    <div class="actions">
+                      <button
+                        type="button"
+                        class="btn small"
+                        disabled={!draft.trim() || sending}
+                        onclick={() => sendNote(m.id, m.name)}
+                      >
+                        Send
+                      </button>
+                      <button type="button" class="btn small" onclick={closeComposer}>
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
                 {/if}
               </li>
             {/each}
           </ul>
+          {#if sentTo}<p class="quiet" role="status">Note sent</p>{/if}
           {#if store.joined}
             <button type="button" class="btn small follow" onclick={stopFollowing}>
               Stop following
@@ -302,10 +387,44 @@
     margin-top: var(--s1);
   }
 
-  .member {
+  .row {
     display: flex;
     align-items: center;
     justify-content: space-between;
+    gap: var(--s2);
+  }
+
+  .note-btn {
+    min-width: 42px;
+    padding: var(--s1);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .composer {
+    margin-top: var(--s1);
+    display: flex;
+    flex-direction: column;
+    gap: var(--s1);
+  }
+
+  .composer textarea {
+    width: 100%;
+    box-sizing: border-box;
+    resize: none;
+    padding: var(--s1);
+    background: var(--white);
+    border: var(--border);
+  }
+
+  .count {
+    align-self: flex-end;
+    color: var(--plum);
+  }
+
+  .actions {
+    display: flex;
     gap: var(--s2);
   }
 

@@ -64,6 +64,7 @@
     join: async () => {},
     leave: async () => {},
     setRole: async () => {},
+    sendNote: async () => null,
   });
 </script>
 

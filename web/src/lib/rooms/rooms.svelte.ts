@@ -2,6 +2,7 @@ import { flushSync, untrack } from 'svelte';
 import { backgrounds } from '../backgrounds/backgrounds.svelte';
 import { drinks } from '../drinks/drinks.svelte';
 import { sound } from '../audio/mixes.svelte';
+import { notes, type Note } from '../notes/notes.svelte';
 import { identity } from '../shell/identity.svelte';
 import { load, save } from '../storage';
 import { timer } from '../timer/engine.svelte';
@@ -40,6 +41,8 @@ export type RoomsDeps = {
   };
   sound: { mix: Mix; applyMix(mix: Mix): void };
   api: RoomsApi;
+  /** Called with each valid sticky note that arrives. */
+  onNote?: (note: Note) => void;
   createEventSource?: (url: string) => EventSource;
   now?: () => number;
 };
@@ -199,6 +202,7 @@ export class RoomsStore {
       this.#syncClock(data.now);
       this.#all = data.rooms as RoomSummary[];
     });
+    es.addEventListener('note', (e) => this.#onNote(e));
     es.addEventListener('room', (e) => {
       const data = parse(e);
       if (!data) return;
@@ -206,6 +210,25 @@ export class RoomsStore {
       if (typeof data.you === 'string') this.me = data.you;
       this.#onRoomEvent((data.room ?? null) as Room | null);
     });
+  }
+
+  #onNote(e: Event) {
+    const data = parse(e);
+    if (!data) return;
+    const { id, roomId, fromId, fromName, text, sentAt } = data;
+    if (
+      typeof id !== 'string' ||
+      !id ||
+      typeof roomId !== 'string' ||
+      typeof fromId !== 'string' ||
+      typeof fromName !== 'string' ||
+      typeof text !== 'string' ||
+      !text ||
+      typeof sentAt !== 'number'
+    ) {
+      return;
+    }
+    this.#d.onNote?.({ id, roomId, fromId, fromName, text, sentAt });
   }
 
   #syncClock(now: unknown) {
@@ -456,6 +479,24 @@ export class RoomsStore {
       this.#fail(e, 'other');
     }
   }
+
+  /** Send a sticky note to another member. Resolves to an error message, or null on success. */
+  async sendNote(memberId: string, text: string): Promise<string | null> {
+    const d = this.#d;
+    const room = this.room;
+    if (!room) return "They've left this timer.";
+    try {
+      await d.api.sendNote(d.identity.token, room.id, { to: memberId, text });
+      return null;
+    } catch (e) {
+      if (e instanceof ApiError) {
+        if (e.status === 429) return "You're sending notes too fast. Wait a minute and try again.";
+        if (e.status === 404) return "They've left this timer.";
+        return e.message;
+      }
+      return "Can't reach the café right now.";
+    }
+  }
 }
 
 function parse(e: Event): Record<string, unknown> | null {
@@ -467,4 +508,12 @@ function parse(e: Event): Record<string, unknown> | null {
   }
 }
 
-export const rooms = new RoomsStore({ identity, timer, drinks, backgrounds, sound, api: realApi });
+export const rooms = new RoomsStore({
+  identity,
+  timer,
+  drinks,
+  backgrounds,
+  sound,
+  api: realApi,
+  onNote: (n) => notes.add(n),
+});

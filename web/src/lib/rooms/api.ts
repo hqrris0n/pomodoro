@@ -82,6 +82,14 @@ export function rename(token: string, name: string): Promise<Record<string, neve
   return call(token, 'PUT', '/me', { name });
 }
 
+export function sendNote(
+  token: string,
+  roomId: string,
+  body: { to: string; text: string },
+): Promise<{ id: string }> {
+  return call(token, 'POST', `/rooms/${id(roomId)}/notes`, body);
+}
+
 export type RoomsApi = {
   createRoom: typeof createRoom;
   joinRoom: typeof joinRoom;
@@ -89,4 +97,5 @@ export type RoomsApi = {
   patchRoom: typeof patchRoom;
   setRole: typeof setRole;
   rename: typeof rename;
+  sendNote: typeof sendNote;
 };

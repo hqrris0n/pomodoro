@@ -142,7 +142,7 @@ export class AudioEngine {
     this.rampMaster();
   }
 
-  async playChime(url: string): Promise<void> {
+  async playChime(url: string, gain = 1): Promise<void> {
     const ctx = this.ctx;
     if (!ctx || !this.chimeGain || this.disposed) return;
     try {
@@ -155,7 +155,14 @@ export class AudioEngine {
       await this.resume();
       const src = ctx.createBufferSource();
       src.buffer = buffer;
-      src.connect(this.chimeGain);
+      if (gain === 1) {
+        src.connect(this.chimeGain);
+      } else {
+        const g = ctx.createGain();
+        g.gain.value = gain;
+        src.connect(g);
+        g.connect(this.chimeGain);
+      }
       src.start();
     } catch (e) {
       this.onError?.('chime', e);

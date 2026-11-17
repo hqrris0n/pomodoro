@@ -87,10 +87,19 @@ describe('SoundStore state', () => {
   it('effect plays the named file through the engine', async () => {
     const { engine, store } = make();
     await store.effect('pop');
-    expect(engine.playChime).toHaveBeenLastCalledWith(`${import.meta.env.BASE_URL}sounds/pop.mp3`);
+    expect(engine.playChime).toHaveBeenLastCalledWith(
+      `${import.meta.env.BASE_URL}sounds/pop.mp3`,
+      1,
+    );
+    await store.effect('page', 0.5);
+    expect(engine.playChime).toHaveBeenLastCalledWith(
+      `${import.meta.env.BASE_URL}sounds/page.mp3`,
+      0.5,
+    );
     await store.chime();
     expect(engine.playChime).toHaveBeenLastCalledWith(
       `${import.meta.env.BASE_URL}sounds/chime.mp3`,
+      1,
     );
   });
 

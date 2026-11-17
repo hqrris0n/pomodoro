@@ -58,6 +58,7 @@ const mkRoom = (over: Partial<Room> = {}): Room => ({
 });
 
 function setup() {
+  const onNote = vi.fn();
   const api = {
     createRoom: vi.fn(async () => mkRoom()),
     joinRoom: vi.fn(async () =>
@@ -67,6 +68,7 @@ function setup() {
     patchRoom: vi.fn(async () => mkRoom()),
     setRole: vi.fn(async () => mkRoom()),
     rename: vi.fn(async () => ({})),
+    sendNote: vi.fn(async () => ({ id: 'n1' })),
   };
   const identity = new Identity();
   const timer = new TimerEngine();
@@ -93,6 +95,7 @@ function setup() {
     backgrounds,
     sound,
     api: api as unknown as RoomsApi,
+    onNote,
     createEventSource: (url) => {
       const s = new FakeSource(url);
       sources.push(s);
@@ -120,6 +123,7 @@ function setup() {
     flushSync();
   };
   return {
+    onNote,
     api,
     identity,
     timer,
@@ -473,5 +477,51 @@ describe('the stream', () => {
     h.api.joinRoom.mockRejectedValueOnce(new TypeError('Failed to fetch'));
     await h.rooms.join('x');
     expect(h.rooms.error).not.toContain(h.identity.token);
+  });
+});
+
+describe('sticky notes', () => {
+  const NOTE = {
+    id: 'n1',
+    roomId: 'r1',
+    fromId: 'o',
+    fromName: 'Name o',
+    text: 'hello',
+    sentAt: 5,
+  };
+
+  it('hands a note event to the callback', async () => {
+    await h.connect();
+    h.es().emit('note', NOTE);
+    expect(h.onNote).toHaveBeenCalledExactlyOnceWith(NOTE);
+  });
+
+  it('ignores malformed notes', async () => {
+    await h.connect();
+    h.es().emit('note', { ...NOTE, text: 5 });
+    h.es().emit('note', { ...NOTE, id: undefined });
+    h.es().emit('note', null);
+    h.es().emit('note', 'junk');
+    expect(h.onNote).not.toHaveBeenCalled();
+  });
+
+  it('sends a note and returns null on success', async () => {
+    await h.asHost();
+    expect(await h.rooms.sendNote('v', 'hi')).toBeNull();
+    expect(h.api.sendNote).toHaveBeenCalledWith(h.identity.token, 'r1', { to: 'v', text: 'hi' });
+  });
+
+  it('maps errors to messages', async () => {
+    await h.asHost();
+    h.api.sendNote.mockRejectedValueOnce(new ApiError(429, 'slow down'));
+    expect(await h.rooms.sendNote('v', 'hi')).toBe(
+      "You're sending notes too fast. Wait a minute and try again.",
+    );
+    h.api.sendNote.mockRejectedValueOnce(new ApiError(404, 'gone'));
+    expect(await h.rooms.sendNote('v', 'hi')).toBe("They've left this timer.");
+    h.api.sendNote.mockRejectedValueOnce(new ApiError(400, 'Too long.'));
+    expect(await h.rooms.sendNote('v', 'hi')).toBe('Too long.');
+    h.api.sendNote.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    expect(await h.rooms.sendNote('v', 'hi')).toBe("Can't reach the café right now.");
   });
 });
