@@ -1,5 +1,5 @@
 # To do
-- [ ] On-off toggles for each music
+- [x] On-off toggles for each music
 - [ ] Make the to-do list collapsable
 - [ ] Center the timer and drinks with the page
 - [ ] Move the to-do list to the left under the title
@@ -8,7 +8,7 @@
 - [ ] keep the scaling of the floor and cup the same even when the drink is done
 - [ ] At the corner of each mix, show a little picture icon to allow the user to pick what background that sound should start playing for; one sound per background max; the user can still pick other sounds after they pick the background so its only tied to the initial change in background
 - [ ] Host, co-host and guest roles; the host can demote co-hosts back to guest ("Promote" / "Demote")
-- [ ] Guests keep their own volume and Sound switch
+- [x] Guests keep their own volume and Sound switch
 - [ ] Clock toggle in the top bar, 12/24-hour setting, timer shown smaller under the time
 - [ ] Bigger timer digits (up to 240px)
 - [ ] User profiles saved on the server (username, display name, "Order for" card, delete user)

@@ -87,7 +87,7 @@ export class AudioEngine {
       this.masterGain.gain.value = this.masterTarget();
       this.masterGain.connect(ctx.destination);
       this.chimeGain = ctx.createGain();
-      this.chimeGain.gain.value = volumeToGain(this.master);
+      this.chimeGain.gain.value = this.masterTarget();
       this.chimeGain.connect(ctx.destination);
       if (typeof document !== 'undefined') {
         document.addEventListener('visibilitychange', this.onVisibility);
@@ -135,7 +135,6 @@ export class AudioEngine {
   setMaster(volume: number): void {
     this.master = Math.min(1, Math.max(0, Number.isFinite(volume) ? volume : 0));
     this.rampMaster();
-    this.ramp(this.chimeGain, volumeToGain(this.master));
   }
 
   setMuted(muted: boolean): void {
@@ -199,6 +198,7 @@ export class AudioEngine {
 
   private rampMaster(): void {
     this.ramp(this.masterGain, this.masterTarget());
+    this.ramp(this.chimeGain, this.masterTarget());
   }
 
   private ramp(node: GainNode | null, target: number): void {

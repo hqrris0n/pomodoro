@@ -17,7 +17,9 @@
 
   let empty = $derived(!sound.channels.some((c) => (sound.mix[c.id] ?? 0) > 0));
 
-  const pct = (id: string) => Math.round((sound.mix[id] ?? 0) * 100);
+  const isOn = (id: string) => (sound.mix[id] ?? 0) > 0;
+  // An off channel shows the level it would come back on at.
+  const pct = (id: string) => Math.round((sound.mix[id] ?? sound.levels[id] ?? 0.5) * 100);
   // Fill ends under the thumb centre: the thumb travels (100% - 18px).
   const fill = (v: number) => `calc(9px + (100% - 18px) * ${v / 100})`;
   const valueText = (v: number) => (v === 0 ? 'Off' : `${v}%`);
@@ -164,8 +166,19 @@
       <ul class="channels">
         {#each sound.channels as c (c.id)}
           {@const v = pct(c.id)}
-          <li class:off={v === 0}>
-            <label>
+          {@const on = isOn(c.id)}
+          <li class:off={!on}>
+            <label class="switch small">
+              <input
+                type="checkbox"
+                checked={on}
+                aria-label={`Play ${c.name}`}
+                {disabled}
+                onchange={(e) => sound.setChannelOn(c.id, e.currentTarget.checked)}
+              />
+              <span class="track" aria-hidden="true"><span class="knob"></span></span>
+            </label>
+            <label class="vol">
               <span class="cname">{c.name}</span>
               <input
                 type="range"
@@ -175,8 +188,8 @@
                 value={v}
                 style:--fill={fill(v)}
                 aria-label={c.name}
-                aria-valuetext={valueText(v)}
-                {disabled}
+                aria-valuetext={valueText(on ? v : 0)}
+                disabled={disabled || !on}
                 oninput={(e) => onVolume(c.id, e)}
               />
             </label>
@@ -436,9 +449,33 @@
     border-bottom: 1px dashed var(--plum);
   }
 
-  .channels label {
+  .channels li {
+    display: flex;
+    align-items: center;
+    gap: var(--s2);
+  }
+
+  .switch.small .track {
+    width: 36px;
+    height: 22px;
+  }
+
+  .switch.small .knob {
+    top: 2px;
+    left: 2px;
+    width: 14px;
+    height: 14px;
+  }
+
+  .switch.small input:checked + .track .knob {
+    right: 2px;
+  }
+
+  .channels label.vol {
+    flex: 1;
+    min-width: 0;
     display: grid;
-    grid-template-columns: 128px 1fr;
+    grid-template-columns: 104px 1fr;
     align-items: center;
     gap: var(--s2);
     min-height: 42px;

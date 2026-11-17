@@ -23,6 +23,7 @@ function resetStore() {
   sound.channels = [];
   sound.error = null;
   sound.mix = {};
+  sound.levels = {};
   sound.master = 0.8;
   sound.enabled = false;
 }
@@ -57,8 +58,25 @@ describe('Mixer', () => {
     expect(sound.enabled).toBe(false);
     await setSlider('Rain', 40);
     expect(sound.mix.rain).toBe(0.4);
-    expect(sound.enabled).toBe(true);
+    expect(sound.enabled).toBe(false);
     expect(slider('Rain')).toHaveAttribute('aria-valuetext', '40%');
+  });
+
+  it('a channel switch disables and re-enables its slider', async () => {
+    await setup();
+    const sw = screen.getByRole('checkbox', { name: 'Play Rain' });
+    expect(sw).not.toBeChecked();
+    expect(slider('Rain')).toBeDisabled();
+    await fireEvent.click(sw);
+    expect(slider('Rain')).toBeEnabled();
+    expect(slider('Rain').value).toBe('50');
+    await setSlider('Rain', 30);
+    await fireEvent.click(sw);
+    expect(slider('Rain')).toBeDisabled();
+    expect(slider('Rain').value).toBe('30');
+    expect(sound.mix).toEqual({});
+    await fireEvent.click(sw);
+    expect(sound.mix.rain).toBe(0.3);
   });
 
   it('loads built-in mixes and un-presses on a slider change', async () => {

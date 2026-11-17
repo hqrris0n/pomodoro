@@ -31,34 +31,67 @@ describe('SoundStore state', () => {
     expect(engine.mixes.at(-1)).toEqual({});
   });
 
-  it('loading Rainy day enables sound and marks it active; a slider change clears it', () => {
+  it('loading Rainy day leaves sound alone and marks it active; a slider change clears it', () => {
     const { engine, store } = make();
     const rainy = store.saved.find((s) => s.name === 'Rainy day')!;
     store.loadSaved(rainy.id);
-    expect(store.enabled).toBe(true);
+    expect(store.enabled).toBe(false);
     expect(store.mix).toEqual({ rain: 0.7, fireplace: 0.4, hum: 0.2 });
     expect(store.activeSavedId).toBe(rainy.id);
+    expect(engine.mixes.at(-1)).toEqual({});
+    store.setEnabled(true);
     expect(engine.mixes.at(-1)).toEqual({ rain: 0.7, fireplace: 0.4, hum: 0.2 });
     store.setVolume('rain', 0.6);
     expect(store.activeSavedId).toBeNull();
   });
 
-  it('enables on any volume above zero and drops zero entries', () => {
+  it('setVolume drops zero entries, keeps the remembered level, never changes enabled', () => {
     const { store } = make();
     store.setVolume('rain', 0.5);
-    expect(store.enabled).toBe(true);
+    expect(store.enabled).toBe(false);
     store.setVolume('rain', 0);
     expect(store.mix).toEqual({});
+    expect(store.levels.rain).toBe(0.5);
+    expect(store.enabled).toBe(false);
+    store.setEnabled(true);
+    store.setVolume('rain', 0.3);
+    store.setVolume('rain', 0);
+    expect(store.enabled).toBe(true);
   });
 
-  it('applyMix replaces levels and enables only when audible', () => {
-    const { store } = make();
-    store.applyMix({});
+  it('switching a channel off and on restores its level; default is 50%', () => {
+    const { engine, store } = make();
+    store.setVolume('rain', 0.7);
+    store.setChannelOn('rain', false);
+    expect(store.mix).toEqual({});
+    expect(engine.mixes.at(-1)).toEqual({});
+    store.setChannelOn('rain', true);
+    expect(store.mix).toEqual({ rain: 0.7 });
+    store.setChannelOn('wind', true);
+    expect(store.mix).toEqual({ rain: 0.7, wind: 0.5 });
     expect(store.enabled).toBe(false);
+  });
+
+  it('applyMix replaces levels without touching enabled; absent channels keep their memory', () => {
+    const { store } = make();
     store.applyMix({ wind: 0.3 });
-    expect(store.enabled).toBe(true);
+    expect(store.enabled).toBe(false);
     store.applyMix({ rain: 0.2 });
     expect(store.mix).toEqual({ rain: 0.2 });
+    expect(store.levels).toEqual({ wind: 0.3, rain: 0.2 });
+    store.setEnabled(true);
+    store.applyMix({});
+    expect(store.enabled).toBe(true);
+  });
+
+  it('effect plays the named file through the engine', async () => {
+    const { engine, store } = make();
+    await store.effect('pop');
+    expect(engine.playChime).toHaveBeenLastCalledWith(`${import.meta.env.BASE_URL}sounds/pop.mp3`);
+    await store.chime();
+    expect(engine.playChime).toHaveBeenLastCalledWith(
+      `${import.meta.env.BASE_URL}sounds/chime.mp3`,
+    );
   });
 
   it('sends nothing audible when disabled, keeps the mix', () => {
@@ -119,6 +152,15 @@ describe('SoundStore saved mixes', () => {
     expect(store.saved).toHaveLength(3);
   });
 
+  it('remembers an off channel level across stores and survives garbage', () => {
+    const { store } = make();
+    store.setVolume('rain', 0.6);
+    store.setChannelOn('rain', false);
+    expect(make().store.levels).toEqual({ rain: 0.6 });
+    localStorage.setItem('cafe:sound', JSON.stringify({ levels: 'x', mix: { a: 2 } }));
+    expect(make().store.levels).toEqual({ a: 1 });
+  });
+
   it('persists levels and user mixes across stores', () => {
     const { store } = make();
     store.setVolume('rain', 0.5);
@@ -127,10 +169,11 @@ describe('SoundStore saved mixes', () => {
     store.saveCurrent('Mine');
     const { store: again, engine } = make();
     expect(again.mix).toEqual({ rain: 0.5 });
+    expect(again.levels).toEqual({ rain: 0.5 });
     expect(again.master).toBe(0.4);
     expect(again.muted).toBe(true);
-    expect(again.enabled).toBe(true);
+    expect(again.enabled).toBe(false);
     expect(again.saved.filter((s) => !s.builtIn).map((s) => s.name)).toEqual(['Mine']);
-    expect(engine.mixes.at(-1)).toEqual({ rain: 0.5 });
+    expect(engine.mixes.at(-1)).toEqual({});
   });
 });

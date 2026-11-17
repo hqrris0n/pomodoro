@@ -178,7 +178,7 @@ describe('AudioEngine', () => {
     expect(fetchBuffer.mock.calls.filter(([u]) => u === '/rain.mp3')).toHaveLength(2);
   });
 
-  it('plays the chime only after unlock, ignoring mute', async () => {
+  it('plays the chime only after unlock, silenced by mute', async () => {
     const { ctx, engine } = setup();
     await engine.playChime('/chime.mp3');
     expect(ctx.sources).toHaveLength(0);
@@ -188,7 +188,7 @@ describe('AudioEngine', () => {
     expect(ctx.sources).toHaveLength(1);
     expect(ctx.sources[0].started).toBe(1);
     expect(ctx.sources[0].connected).toBe(ctx.gains[1]);
-    expect(ctx.gains[1].gain.calls).not.toContain(0);
+    expect(ctx.gains[1].gain.calls.at(-1)).toBe(0);
   });
 
   it('resumes a suspended context when the page becomes visible', async () => {

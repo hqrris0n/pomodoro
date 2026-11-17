@@ -9,10 +9,11 @@ type EngineLike = Pick<
   'unlock' | 'setChannels' | 'setMix' | 'setMaster' | 'setMuted' | 'playChime'
 >;
 
-type SoundPrefs = { mix: Mix; master: number; muted: boolean; enabled: boolean };
+type SoundPrefs = { mix: Mix; levels: Mix; master: number; muted: boolean; enabled: boolean };
 type StoredMix = { id: string; name: string; mix: Mix };
 
 const MAX_NAME = 30;
+const DEFAULT_LEVEL = 0.5;
 
 const builtIn = (id: string, name: string, mix: Mix): SavedMix => ({
   id: `builtin:${id}`,
@@ -53,6 +54,8 @@ export class SoundStore {
   channels = $state<SoundChannel[]>([]);
   error = $state<string | null>(null);
   mix = $state<Mix>({});
+  /** Last non-zero level per channel, kept while the channel is switched off. */
+  levels = $state<Mix>({});
   master = $state(0.8);
   muted = $state(false);
   enabled = $state(false);
@@ -72,6 +75,7 @@ export class SoundStore {
     this.engine = engine;
     const prefs = load<Partial<SoundPrefs>>('sound', {});
     this.mix = cleanMix(prefs.mix);
+    this.levels = { ...cleanMix(prefs.levels), ...this.mix };
     if (typeof prefs.master === 'number' && Number.isFinite(prefs.master)) {
       this.master = clamp01(prefs.master);
     }
@@ -130,12 +134,17 @@ export class SoundStore {
     const next = { ...this.mix };
     if (v > 0) {
       next[channelId] = v;
-      this.enabled = true;
+      this.levels = { ...this.levels, [channelId]: v };
     } else {
       delete next[channelId];
     }
     this.mix = next;
     this.commit();
+  }
+
+  /** Switch one channel on (at its remembered level, else 50%) or off. Never touches `enabled`. */
+  setChannelOn(channelId: string, on: boolean): void {
+    this.setVolume(channelId, on ? (this.levels[channelId] ?? DEFAULT_LEVEL) : 0);
   }
 
   setMaster(v: number): void {
@@ -154,8 +163,7 @@ export class SoundStore {
   }
 
   applyMix(mix: Mix): void {
-    this.mix = cleanMix(mix);
-    if (Object.keys(this.mix).length > 0) this.enabled = true;
+    this.setMixLevels(mix);
     this.commit();
   }
 
@@ -178,8 +186,7 @@ export class SoundStore {
   loadSaved(id: string): void {
     const m = this.saved.find((s) => s.id === id);
     if (!m) return;
-    this.mix = cleanMix($state.snapshot(m.mix));
-    this.enabled = true;
+    this.setMixLevels($state.snapshot(m.mix));
     this.commit();
   }
 
@@ -212,8 +219,18 @@ export class SoundStore {
     return p;
   }
 
+  /** Play a short effect from sounds/<name>.mp3; follows master volume and mute, not `enabled`. */
+  effect(name: string): Promise<void> {
+    return this.engine.playChime(`${import.meta.env.BASE_URL}sounds/${name}.mp3`);
+  }
+
   chime(): Promise<void> {
-    return this.engine.playChime(`${import.meta.env.BASE_URL}sounds/chime.mp3`);
+    return this.effect('chime');
+  }
+
+  private setMixLevels(mix: Mix): void {
+    this.mix = cleanMix(mix);
+    this.levels = { ...this.levels, ...this.mix };
   }
 
   private validateName(n: string): string | null {
@@ -232,6 +249,7 @@ export class SoundStore {
   private commit(): void {
     save('sound', {
       mix: $state.snapshot(this.mix),
+      levels: $state.snapshot(this.levels),
       master: this.master,
       muted: this.muted,
       enabled: this.enabled,
