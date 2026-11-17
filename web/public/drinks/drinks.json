@@ -1,0 +1,119 @@
+[
+  {
+    "id": "latte",
+    "name": "Latte",
+    "image": "latte.svg",
+    "glass": {
+      "layers": [
+        { "color": "#6b4337", "share": 0.3 },
+        { "color": "#d99a5b", "share": 0.7 }
+      ],
+      "ice": false,
+      "topping": "foam",
+      "straw": null,
+      "hot": true
+    }
+  },
+  {
+    "id": "iced-americano",
+    "name": "Iced americano",
+    "image": "iced-americano.svg",
+    "glass": {
+      "layers": [
+        { "color": "#6b4337", "share": 0.55 },
+        { "color": "#b9703f", "share": 0.45 }
+      ],
+      "ice": true,
+      "topping": "none",
+      "straw": "#e58a9a",
+      "hot": false
+    }
+  },
+  {
+    "id": "matcha-latte",
+    "name": "Matcha latte",
+    "image": "matcha-latte.svg",
+    "glass": {
+      "layers": [
+        { "color": "#fffaf0", "share": 0.4 },
+        { "color": "#86a85c", "share": 0.6 }
+      ],
+      "ice": false,
+      "topping": "foam",
+      "straw": null,
+      "hot": true
+    }
+  },
+  {
+    "id": "hot-chocolate",
+    "name": "Hot chocolate",
+    "image": "hot-chocolate.svg",
+    "glass": {
+      "layers": [
+        { "color": "#4a3145", "share": 0.35 },
+        { "color": "#6b4337", "share": 0.65 }
+      ],
+      "ice": false,
+      "topping": "cream",
+      "straw": null,
+      "hot": true
+    }
+  },
+  {
+    "id": "strawberry-milk",
+    "name": "Strawberry milk",
+    "image": "strawberry-milk.svg",
+    "glass": {
+      "layers": [
+        { "color": "#b8526a", "share": 0.25 },
+        { "color": "#e58a9a", "share": 0.75 }
+      ],
+      "ice": true,
+      "topping": "none",
+      "straw": "#fffaf0",
+      "hot": false
+    }
+  },
+  {
+    "id": "thai-tea",
+    "name": "Thai tea",
+    "image": "thai-tea.svg",
+    "glass": {
+      "layers": [
+        { "color": "#e8743b", "share": 0.55 },
+        { "color": "#fcefd9", "share": 0.45 }
+      ],
+      "ice": true,
+      "topping": "none",
+      "straw": "#86a85c",
+      "hot": false
+    }
+  },
+  {
+    "id": "chai",
+    "name": "Chai",
+    "image": "chai.svg",
+    "glass": {
+      "layers": [
+        { "color": "#b9703f", "share": 0.6 },
+        { "color": "#d99a5b", "share": 0.4 }
+      ],
+      "ice": false,
+      "topping": "foam",
+      "straw": null,
+      "hot": true
+    }
+  },
+  {
+    "id": "lemonade",
+    "name": "Lemonade",
+    "image": "lemonade.svg",
+    "glass": {
+      "layers": [{ "color": "#f3d58a", "share": 1 }],
+      "ice": true,
+      "topping": "lemon",
+      "straw": "#8fb7c9",
+      "hot": false
+    }
+  }
+]
