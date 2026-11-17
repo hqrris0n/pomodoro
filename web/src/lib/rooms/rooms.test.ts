@@ -85,6 +85,7 @@ function setup() {
     playChime: async () => {},
   });
   sound.applyMix({ hum: 0.3 });
+  const sources: FakeSource[] = [];
   const rooms = new RoomsStore({
     identity,
     timer,
@@ -92,10 +93,14 @@ function setup() {
     backgrounds,
     sound,
     api: api as unknown as RoomsApi,
-    createEventSource: (url) => new FakeSource(url) as unknown as EventSource,
+    createEventSource: (url) => {
+      const s = new FakeSource(url);
+      sources.push(s);
+      return s as unknown as EventSource;
+    },
   });
   const stop = rooms.start();
-  const es = () => FakeSource.all[FakeSource.all.length - 1];
+  const es = () => sources[sources.length - 1];
   const settle = () => vi.advanceTimersByTimeAsync(0);
   const connect = async (room: Room | null = null) => {
     es().emit('open');
@@ -223,6 +228,64 @@ describe('publishing my timer', () => {
     h.es().emit('room', { now: Date.now(), you: 'me', room: null });
     await h.settle();
     expect(h.api.createRoom).toHaveBeenCalledOnce();
+  });
+
+  it('re-creates with the time already elapsed, since the server re-anchors to its now', async () => {
+    await h.asOwner();
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    h.es().emit('room', { now: Date.now(), you: 'me', room: null });
+    await h.settle();
+    const body = (h.api.createRoom.mock.calls[0] as unknown[])[1] as { timer: TimerState };
+    expect(Math.abs(body.timer.elapsedMs - 5 * 60_000)).toBeLessThan(1000);
+    expect(body.timer.anchorAt).not.toBeNull();
+  });
+});
+
+describe('two tabs of one browser (one token, one member)', () => {
+  /** What the browser does in every other tab when this one writes localStorage. */
+  const otherTabsSee = (key: string) =>
+    window.dispatchEvent(
+      new StorageEvent('storage', {
+        key: `cafe:${key}`,
+        newValue: localStorage.getItem(`cafe:${key}`),
+      }),
+    );
+
+  it('keeps the timer stopped in both tabs after the owner leaves', async () => {
+    const a = h;
+    const b = setup();
+    try {
+      await a.asOwner();
+      // Tab B takes its turn on the token's single stream and mirrors r1.
+      b.es().emit('open');
+      b.es().emit('room', { now: Date.now(), you: 'me', room: mkRoom({ timer: a.timer.state! }) });
+      await b.settle();
+      expect(b.timer.state).not.toBeNull();
+      await vi.advanceTimersByTimeAsync(5 * 60_000);
+
+      // Leave (confirmed) in tab A.
+      a.timer.stop();
+      otherTabsSee('timer');
+      // The server now has this token in no room; B holds the stream and hears it.
+      b.es().emit('room', { now: Date.now(), you: 'me', room: null });
+      await b.settle();
+
+      // Tab A gets the stream back later and receives whatever room the token is in.
+      const created = b.api.createRoom.mock.calls[0] as unknown[] | undefined;
+      const sent = (created?.[1] as { timer: TimerState } | undefined)?.timer;
+      const serverRoom = sent
+        ? mkRoom({ id: 'r2', timer: { ...sent, anchorAt: Date.now() } })
+        : null;
+      a.es().emit('room', { now: Date.now(), you: 'me', room: serverRoom });
+      await a.settle();
+
+      expect(a.timer.state).toBeNull();
+      expect(b.timer.state).toBeNull();
+      expect(b.api.createRoom).not.toHaveBeenCalled();
+    } finally {
+      b.stop();
+      b.timer.stop();
+    }
   });
 });
 

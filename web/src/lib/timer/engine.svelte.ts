@@ -1,4 +1,4 @@
-import { load, save } from '../storage';
+import { load, onOtherTab, save } from '../storage';
 import type { TimerState } from '../types';
 import { newTimer, paused, resumed, snapshot, type TimerView } from './schedule';
 
@@ -36,6 +36,13 @@ export class TimerEngine {
     if (isState(saved)) this.state = saved;
     this.#now = this.#clock();
     this.#settle();
+    // A stop in another tab of this browser must stop this tab too. The server
+    // cannot relay it: both tabs share one token, and after the leave that
+    // member is in no room, so this tab would otherwise re-publish its stale
+    // timer as a new room. Running timers reach other tabs through the room.
+    onOtherTab<unknown>(KEY, (v) => {
+      if (v === null && this.state !== null) this.#set(null, false);
+    });
     if (typeof document !== 'undefined') {
       document.addEventListener('visibilitychange', () => {
         if (document.visibilityState === 'visible') this.#tick();

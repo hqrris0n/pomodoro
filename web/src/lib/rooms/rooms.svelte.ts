@@ -5,7 +5,7 @@ import { sound } from '../audio/mixes.svelte';
 import { identity } from '../shell/identity.svelte';
 import { load, save } from '../storage';
 import { timer } from '../timer/engine.svelte';
-import { snapshot } from '../timer/schedule';
+import { elapsedAt, snapshot } from '../timer/schedule';
 import type { Mix, Settings, TimerState } from '../types';
 import * as realApi from './api';
 import { ApiError, type Room, type RoomSummary, type RoomsApi } from './api';
@@ -334,11 +334,19 @@ export class RoomsStore {
     const d = this.#d;
     this.#creating = true;
     const settings = this.#effective();
+    // The server re-anchors a running timer at its own now, so send the time
+    // elapsed so far; a timer started earlier would otherwise restart in full.
+    const now = this.#clock();
+    const timer: TimerState = {
+      ...state,
+      elapsedMs: elapsedAt(state, now),
+      anchorAt: state.anchorAt === null ? null : now,
+    };
     try {
       const room = await d.api.createRoom(d.identity.token, {
         name: d.identity.name,
         settings,
-        timer: state,
+        timer,
       });
       if (d.timer.state === null || this.role === 'visitor' || this.room) {
         // Stopped or joined elsewhere while the request was in flight.

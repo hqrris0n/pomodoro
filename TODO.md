@@ -16,5 +16,5 @@
 - [x] Rename "Café timer" to "Pomo Café"
 - [ ] Page-turn sound when the to-do list opens or closes
 - [ ] Sticky notes to people in the same room
-- [ ] Fix: the timer starts by itself after clicking Leave
+- [x] Fix: the timer starts by itself after clicking Leave
 - [ ] Make the disabled Pause button for guests clearly disabled
