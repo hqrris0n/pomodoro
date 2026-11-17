@@ -5,6 +5,7 @@
   import Background from './lib/backgrounds/Background.svelte';
   import SceneSelector from './lib/backgrounds/SceneSelector.svelte';
   import { backgrounds } from './lib/backgrounds/backgrounds.svelte';
+  import { installMixLinks } from './lib/audio/links.svelte';
   import { sound } from './lib/audio/mixes.svelte';
   import ClocksMenu from './lib/rooms/ClocksMenu.svelte';
   import { rooms } from './lib/rooms/rooms.svelte';
@@ -36,6 +37,7 @@
       installAudioUnlock(),
       bindTitle(timer),
       backgrounds.startRotation(),
+      installMixLinks(),
       rooms.start(),
     ];
     void sound.load();

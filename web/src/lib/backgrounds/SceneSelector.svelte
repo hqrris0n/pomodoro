@@ -86,7 +86,7 @@
               value={s.id}
               {disabled}
               checked={backgrounds.selectedId === s.id}
-              onchange={() => !disabled && backgrounds.select(s.id)}
+              onchange={() => !disabled && backgrounds.choose(s.id)}
             />
             <span class="thumb" aria-hidden="true"><Scene still /></span>
             <span class="name">{s.name}</span>

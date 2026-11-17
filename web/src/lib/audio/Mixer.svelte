@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
+  import { scenes } from '../backgrounds/registry';
   import { sound } from './mixes.svelte';
 
   let { disabled = false, lockedNote }: { disabled?: boolean; lockedNote?: string } = $props();
@@ -14,6 +15,65 @@
   let renameText = $state('');
   let renameError = $state<string | null>(null);
   let list: HTMLElement | undefined = $state();
+
+  // Background picker: one open at a time, placed with fixed coordinates so it stays on screen.
+  const PICKER_WIDTH = 280;
+  const PICKER_GUTTER = 12;
+  let pickerId = $state<string | null>(null);
+  let pickerLeft = $state(PICKER_GUTTER);
+  let pickerTop = $state(0);
+  let pickerEl: HTMLElement | undefined = $state();
+  let pickerMix = $derived(sound.saved.find((m) => m.id === pickerId));
+
+  const pickerButton = (id: string) =>
+    list?.querySelector<HTMLButtonElement>(`button[data-picker="${CSS.escape(id)}"]`);
+
+  function placePicker() {
+    if (!pickerId) return;
+    const btn = pickerButton(pickerId);
+    if (!btn) return;
+    const r = btn.getBoundingClientRect();
+    const width = Math.min(PICKER_WIDTH, window.innerWidth - 2 * PICKER_GUTTER);
+    pickerLeft = Math.max(
+      PICKER_GUTTER,
+      Math.min(r.right - width, window.innerWidth - width - PICKER_GUTTER),
+    );
+    pickerTop = r.bottom + 6;
+  }
+
+  function togglePicker(id: string) {
+    pickerId = pickerId === id ? null : id;
+  }
+
+  $effect(() => {
+    if (disabled || !pickerMix) pickerId = null;
+  });
+
+  $effect(() => {
+    if (!pickerId) return;
+    const id = pickerId;
+    placePicker();
+    const onDown = (e: PointerEvent) => {
+      const t = e.target as Node;
+      if (pickerEl?.contains(t) || pickerButton(id)?.contains(t)) return;
+      pickerId = null;
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      pickerId = null;
+      void tick().then(() => pickerButton(id)?.focus());
+    };
+    window.addEventListener('pointerdown', onDown);
+    window.addEventListener('keydown', onKey);
+    window.addEventListener('resize', placePicker);
+    window.addEventListener('scroll', placePicker, true);
+    return () => {
+      window.removeEventListener('pointerdown', onDown);
+      window.removeEventListener('keydown', onKey);
+      window.removeEventListener('resize', placePicker);
+      window.removeEventListener('scroll', placePicker, true);
+    };
+  });
 
   let empty = $derived(!sound.channels.some((c) => (sound.mix[c.id] ?? 0) > 0));
 
@@ -122,16 +182,47 @@
               {#if renameError}<p class="error" role="alert">{renameError}</p>{/if}
             </div>
           {:else}
-            <button
-              type="button"
-              class="btn"
-              class:has-icons={!m.builtIn}
-              aria-pressed={sound.activeSavedId === m.id}
-              {disabled}
-              onclick={() => sound.loadSaved(m.id)}
-            >
-              {m.name}
-            </button>
+            <span class="chip">
+              <button
+                type="button"
+                class="btn"
+                class:has-icons={!m.builtIn}
+                aria-pressed={sound.activeSavedId === m.id}
+                {disabled}
+                onclick={() => sound.loadSaved(m.id)}
+              >
+                {m.name}
+              </button>
+              <button
+                type="button"
+                class="pic"
+                class:linked={sound.linksFor(m.id).length > 0}
+                data-picker={m.id}
+                aria-label={`Backgrounds for ${m.name}`}
+                aria-haspopup="true"
+                aria-expanded={pickerId === m.id}
+                {disabled}
+                onclick={() => togglePicker(m.id)}
+              >
+                <svg
+                  viewBox="0 0 9 8"
+                  width="18"
+                  height="16"
+                  shape-rendering="crispEdges"
+                  aria-hidden="true"
+                >
+                  <rect class="fillbg" x="1" y="1" width="7" height="6" />
+                  <rect class="sun" x="5" y="2" width="2" height="2" />
+                  <rect class="hill" x="3" y="4" width="1" height="1" />
+                  <rect class="hill" x="2" y="5" width="3" height="1" />
+                  <rect class="hill" x="1" y="6" width="5" height="1" />
+                  <rect class="frame" x="0" y="0" width="9" height="1" />
+                  <rect class="frame" x="0" y="7" width="9" height="1" />
+                  <rect class="frame" x="0" y="0" width="1" height="8" />
+                  <rect class="frame" x="8" y="0" width="1" height="8" />
+                </svg>
+              </button>
+            </span>
             {#if !m.builtIn}
               <button
                 type="button"
@@ -157,6 +248,36 @@
       {/each}
     </ul>
   </div>
+
+  {#if pickerMix}
+    <div
+      class="picker panel"
+      bind:this={pickerEl}
+      role="group"
+      aria-label={`Backgrounds for ${pickerMix.name}`}
+      style:left="{pickerLeft}px"
+      style:top="{pickerTop}px"
+    >
+      <p class="picker-hint">Start this mix when the background changes to:</p>
+      {#each scenes as sc (sc.id)}
+        <label class="check">
+          <input
+            type="checkbox"
+            checked={sound.links[sc.id] === pickerMix.id}
+            {disabled}
+            onchange={(e) => sound.setLink(sc.id, pickerMix.id, e.currentTarget.checked)}
+          />
+          <span class="box" aria-hidden="true"></span>
+          <span>{sc.name}</span>
+          {#if sound.links[sc.id] && sound.links[sc.id] !== pickerMix.id}
+            <span class="taken">
+              (now {sound.saved.find((m) => m.id === sound.links[sc.id])?.name})
+            </span>
+          {/if}
+        </label>
+      {/each}
+    </div>
+  {/if}
 
   <div class="group">
     <h3>Sounds</h3>
@@ -355,6 +476,124 @@
     min-width: 0;
     padding-inline: var(--s2);
     overflow-wrap: anywhere;
+  }
+
+  .chip {
+    position: relative;
+    display: flex;
+    min-width: 0;
+  }
+
+  .pic {
+    position: absolute;
+    top: -9px;
+    right: -9px;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    display: grid;
+    place-items: center;
+    background: none;
+    border: 0;
+    cursor: pointer;
+  }
+
+  .pic:focus-visible {
+    outline: var(--px) solid var(--butter);
+    outline-offset: var(--px);
+  }
+
+  .pic:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+  }
+
+  .pic .frame,
+  .pic .hill {
+    fill: var(--ink);
+  }
+
+  .pic .sun {
+    fill: var(--ink);
+  }
+
+  .pic .fillbg {
+    fill: var(--white);
+  }
+
+  .pic.linked .fillbg {
+    fill: var(--butter);
+  }
+
+  .pic.linked .sun {
+    fill: var(--berry);
+  }
+
+  .pic.linked .hill {
+    fill: var(--moss);
+  }
+
+  .picker {
+    position: fixed;
+    z-index: 20;
+    width: min(280px, calc(100vw - 24px));
+    padding: var(--s2);
+    display: flex;
+    flex-direction: column;
+    gap: var(--s1);
+    color: var(--ink);
+  }
+
+  .picker-hint {
+    margin: 0;
+  }
+
+  .check {
+    position: relative;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--s1) var(--s2);
+    min-height: 36px;
+    cursor: pointer;
+  }
+
+  .check input {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    opacity: 0;
+    cursor: inherit;
+  }
+
+  .check .box {
+    flex: none;
+    box-sizing: border-box;
+    width: 21px;
+    height: 21px;
+    background: var(--white);
+    border: var(--border);
+  }
+
+  .check input:checked + .box {
+    background: var(--matcha);
+    box-shadow: inset 0 0 0 var(--px) var(--white);
+  }
+
+  .check input:focus-visible + .box {
+    outline: var(--px) solid var(--butter);
+    outline-offset: var(--px);
+  }
+
+  .check input:disabled + .box {
+    border-color: var(--plum);
+    background: var(--foam);
+  }
+
+  .taken {
+    color: var(--plum);
   }
 
   .rename-wrap {

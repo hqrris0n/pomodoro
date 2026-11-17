@@ -13,6 +13,7 @@ function clampRotate(min: number): number {
 export class BackgroundStore {
   #selectedId = $state(DEFAULT_ID);
   #rotateMin = $state(0);
+  #listeners: ((id: string) => void)[] = [];
 
   constructor() {
     const id = load<unknown>('background', DEFAULT_ID);
@@ -39,6 +40,21 @@ export class BackgroundStore {
     save('background', id);
   }
 
+  /** A user or automatic change (not room sync): select, then tell listeners if it changed. */
+  choose(id: string): void {
+    if (!scenes.some((s) => s.id === id) || id === this.#selectedId) return;
+    this.select(id);
+    for (const fn of [...this.#listeners]) fn(id);
+  }
+
+  /** Listen for choose() and next() changes. Returns unsubscribe. */
+  onChoose(fn: (id: string) => void): () => void {
+    this.#listeners.push(fn);
+    return () => {
+      this.#listeners = this.#listeners.filter((f) => f !== fn);
+    };
+  }
+
   setRotate(min: number): void {
     this.#rotateMin = clampRotate(min);
     save('backgroundRotate', this.#rotateMin);
@@ -46,7 +62,7 @@ export class BackgroundStore {
 
   next(): void {
     const i = scenes.indexOf(sceneById(this.#selectedId));
-    this.select(scenes[(i + 1) % scenes.length].id);
+    this.choose(scenes[(i + 1) % scenes.length].id);
   }
 
   /** While rotateMin > 0, call next() every rotateMin minutes. Returns stop. */

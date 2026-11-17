@@ -26,6 +26,7 @@ function resetStore() {
   sound.levels = {};
   sound.master = 0.8;
   sound.enabled = false;
+  sound.links = {};
 }
 
 async function setup(props: { disabled?: boolean; lockedNote?: string } = {}, fetchOk = true) {
@@ -130,6 +131,27 @@ describe('Mixer', () => {
 
     await fireEvent.click(screen.getByRole('button', { name: 'Delete Deep work' }));
     expect(screen.queryByRole('button', { name: 'Deep work' })).toBeNull();
+  });
+
+  it('links a background to a mix through the picker icon', async () => {
+    await setup();
+    const icon = screen.getByRole('button', { name: 'Backgrounds for Rainy day' });
+    expect(icon).toHaveAttribute('aria-expanded', 'false');
+    expect(icon).not.toHaveClass('linked');
+    await fireEvent.click(icon);
+    expect(icon).toHaveAttribute('aria-expanded', 'true');
+    const box = screen.getByRole('checkbox', { name: 'Night café' });
+    expect(box).not.toBeChecked();
+    await fireEvent.click(box);
+    expect(icon).toHaveClass('linked');
+    expect(sound.links).toEqual({ 'night-lights': 'builtin:rainy-day' });
+    expect(JSON.parse(localStorage.getItem('cafe:mixLinks')!)).toEqual({
+      'night-lights': 'builtin:rainy-day',
+    });
+    expect(sound.mix).toEqual({});
+    await fireEvent.keyDown(window, { key: 'Escape' });
+    expect(screen.queryByRole('checkbox', { name: 'Night café' })).toBeNull();
+    expect(icon).toHaveFocus();
   });
 
   it('disables every control and shows the locked note', async () => {

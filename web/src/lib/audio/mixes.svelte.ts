@@ -1,5 +1,6 @@
 import { load, save } from '../storage';
 import type { Mix, SoundChannel } from '../types';
+import { scenes } from '../backgrounds/registry';
 import { AudioEngine } from './engine';
 
 export type SavedMix = { id: string; name: string; mix: Mix; builtIn: boolean };
@@ -60,6 +61,8 @@ export class SoundStore {
   muted = $state(false);
   enabled = $state(false);
   private userMixes = $state<StoredMix[]>([]);
+  /** backgroundId -> mixId: the mix that starts when that background is chosen. */
+  links = $state<Record<string, string>>({});
 
   saved = $derived<SavedMix[]>([
     ...BUILT_INS,
@@ -92,6 +95,18 @@ export class SoundStore {
           this.userMixes.every((u) => u.id !== m.id)
         ) {
           this.userMixes.push({ id: m.id, name: m.name, mix: cleanMix(m.mix) });
+        }
+      }
+    }
+    const storedLinks = load<unknown>('mixLinks', {});
+    if (storedLinks && typeof storedLinks === 'object' && !Array.isArray(storedLinks)) {
+      for (const [bg, mixId] of Object.entries(storedLinks)) {
+        if (
+          typeof mixId === 'string' &&
+          scenes.some((s) => s.id === bg) &&
+          this.saved.some((m) => m.id === mixId)
+        ) {
+          this.links[bg] = mixId;
         }
       }
     }
@@ -190,6 +205,23 @@ export class SoundStore {
     this.commit();
   }
 
+  /** Background ids linked to this mix. */
+  linksFor(mixId: string): string[] {
+    return Object.keys(this.links).filter((bg) => this.links[bg] === mixId);
+  }
+
+  /** on: make mixId the mix for backgroundId (replacing any other). off: unlink if it points at mixId. */
+  setLink(backgroundId: string, mixId: string, on: boolean): void {
+    if (on) {
+      if (!scenes.some((s) => s.id === backgroundId)) return;
+      if (!this.saved.some((m) => m.id === mixId)) return;
+      this.links[backgroundId] = mixId;
+    } else if (this.links[backgroundId] === mixId) {
+      delete this.links[backgroundId];
+    } else return;
+    this.persistLinks();
+  }
+
   /** Returns an error message, or null on success. No-op (null) on built-ins and unknown ids. */
   renameSaved(id: string, name: string): string | null {
     const target = this.userMixes.find((m) => m.id === id);
@@ -211,6 +243,14 @@ export class SoundStore {
     if (i < 0) return;
     this.userMixes.splice(i, 1);
     this.persistMixes();
+    let changed = false;
+    for (const bg of Object.keys(this.links)) {
+      if (this.links[bg] === id) {
+        delete this.links[bg];
+        changed = true;
+      }
+    }
+    if (changed) this.persistLinks();
   }
 
   unlock(): Promise<void> {
@@ -244,6 +284,10 @@ export class SoundStore {
 
   private persistMixes(): void {
     save('mixes', $state.snapshot(this.userMixes));
+  }
+
+  private persistLinks(): void {
+    save('mixLinks', $state.snapshot(this.links));
   }
 
   private commit(): void {
