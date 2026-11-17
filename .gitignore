@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.DS_Store
+web/.playwright-browsers/
+web/playwright-report/
+web/test-results/
+playwright-report/
+test-results/
+# server binaries
+server/bin/
+server/*.exe
+server/server
+server/cafe-server
+*.test.exe
