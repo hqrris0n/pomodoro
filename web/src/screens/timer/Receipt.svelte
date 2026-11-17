@@ -1,8 +1,35 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
+  import { load, save } from '../../lib/storage';
   import TodoList from '../../lib/todos/TodoList.svelte';
   import { todos } from '../../lib/todos/todos.svelte';
 
-  let open = $state(false);
+  // 1376px = 640px scene + 2 × (24px gutter + 320px receipt + 24px gap): the docked panel never overlaps the column.
+  const WIDE = '(min-width: 1376px)';
+
+  let wide = $state(false);
+  // Docked panel: remembered across reloads. Bottom sheet: always starts closed.
+  let wideOpen = $state(load('receiptOpen', true));
+  let sheetOpen = $state(false);
+  const open = $derived(wide ? wideOpen : sheetOpen);
+
+  onMount(() => {
+    if (typeof window.matchMedia !== 'function') return;
+    const query = window.matchMedia(WIDE);
+    wide = query.matches;
+    const onchange = (e: MediaQueryListEvent) => (wide = e.matches);
+    query.addEventListener('change', onchange);
+    return () => query.removeEventListener('change', onchange);
+  });
+
+  function toggle() {
+    if (wide) {
+      wideOpen = !wideOpen;
+      save('receiptOpen', wideOpen);
+    } else {
+      sheetOpen = !sheetOpen;
+    }
+  }
 
   const label = $derived(
     todos.items.length === 0
@@ -13,7 +40,7 @@
   );
 
   function onkeydown(event: KeyboardEvent) {
-    if (event.key === 'Escape') open = false;
+    if (event.key === 'Escape') sheetOpen = false;
   }
 </script>
 
@@ -25,7 +52,7 @@
     class="bar"
     aria-expanded={open}
     aria-controls="receipt-body"
-    onclick={() => (open = !open)}
+    onclick={toggle}
   >
     <span>{label}</span>
     <svg
@@ -51,12 +78,12 @@
 </aside>
 
 <style>
-  /* Desktop: docked at the right edge, below the top bar. */
+  /* Wide: docked top-left under the wordmark, collapsible to its bar. */
   .receipt {
     position: fixed;
     z-index: 2;
     top: calc(var(--topbar-height) + var(--s4));
-    right: var(--s4);
+    left: var(--s4);
     width: var(--receipt-width);
     max-height: calc(100dvh - var(--topbar-height) - var(--s4) * 2);
     display: flex;
@@ -64,17 +91,42 @@
   }
 
   .bar {
-    display: none;
+    display: flex;
+    flex: none;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+    height: 48px;
+    padding: 0 var(--s3);
+    background: none;
+    border: 0;
+    cursor: pointer;
+    text-align: left;
+  }
+
+  .chevron {
+    fill: var(--ink);
+    transform: scaleY(-1);
+  }
+
+  .receipt:not(.open) .chevron {
+    transform: none;
   }
 
   .body {
+    display: none;
     padding: var(--s3);
     overflow-y: auto;
     overscroll-behavior: contain;
+    border-top: 1px dashed var(--plum);
   }
 
-  /* Phone: a bottom sheet that is one 48px bar until tapped. */
-  @media (max-width: 899px) {
+  .open .body {
+    display: block;
+  }
+
+  /* Below the wide layout: a bottom sheet that is one 48px bar until tapped. */
+  @media (max-width: 1375px) {
     .receipt {
       top: auto;
       right: 0;
@@ -84,37 +136,6 @@
       max-height: 70dvh;
       border-width: var(--px) 0 0;
       box-shadow: none;
-    }
-
-    .bar {
-      display: flex;
-      flex: none;
-      align-items: center;
-      justify-content: space-between;
-      width: 100%;
-      height: 48px;
-      padding: 0 var(--s3);
-      background: none;
-      border: 0;
-      cursor: pointer;
-      text-align: left;
-    }
-
-    .chevron {
-      fill: var(--ink);
-    }
-
-    .open .chevron {
-      transform: scaleY(-1);
-    }
-
-    .body {
-      display: none;
-      border-top: 1px dashed var(--plum);
-    }
-
-    .open .body {
-      display: block;
     }
   }
 </style>

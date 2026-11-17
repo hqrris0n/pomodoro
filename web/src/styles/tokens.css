@@ -35,7 +35,7 @@
   --t2: 25px;
   --t3: 30px;
   --t4: 40px;
-  --t-timer: clamp(72px, 18vw, 160px);
+  --t-timer: clamp(72px, min(20vw, 18vh), 240px);
 
   /* chrome */
   --border: var(--px) solid var(--ink);

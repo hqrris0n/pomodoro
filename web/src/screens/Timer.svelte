@@ -49,14 +49,16 @@
 {#if view}
   <div class="screen">
     <main class="column">
-      {#if done}
-        <h1 class="ready">
-          {drink ? `Your ${drink.name.toLowerCase()} is ready` : 'Your drink is ready'}
-        </h1>
-      {:else}
-        <Countdown ms={view.phaseRemainingMs} />
-        <p class="status">{status}</p>
-      {/if}
+      <div class="head">
+        {#if done}
+          <h1 class="ready">
+            {drink ? `Your ${drink.name.toLowerCase()} is ready` : 'Your drink is ready'}
+          </h1>
+        {:else}
+          <Countdown ms={view.phaseRemainingMs} />
+          <p class="status">{status}</p>
+        {/if}
+      </div>
 
       <div class="scene">
         {#if drink}
@@ -94,8 +96,20 @@
     justify-content: center;
     gap: var(--s3);
     padding: var(--s3) var(--s3) var(--s4);
-    /* centre in the space left of the docked receipt */
-    margin-right: calc(var(--receipt-width) + var(--s4) * 2);
+    /* Fixed height of the countdown + status block, so the ready heading
+       takes the same room and the scene never moves when the drink is done. */
+    --head-h: calc(var(--t-timer) + var(--s3) - var(--s2) + 1.4 * var(--t2));
+  }
+
+  .head {
+    height: var(--head-h);
+    flex: none;
+    max-width: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: var(--s3);
   }
 
   .status {
@@ -119,13 +133,20 @@
     text-shadow: calc(var(--px) * 2) calc(var(--px) * 2) 0 var(--ink);
   }
 
+  /* Shrink the scene (160:96) when the window is too short for the full 640px. */
   .scene {
-    width: min(100%, 640px);
+    width: min(
+      100%,
+      640px,
+      calc(
+        (100dvh - var(--topbar-height) - var(--head-h) - 48px - var(--s3) * 3 - var(--s4)) * 5 / 3
+      )
+    );
   }
 
-  @media (max-width: 899px) {
+  /* Below the wide layout the receipt is a bottom sheet. */
+  @media (max-width: 1375px) {
     .column {
-      margin-right: 0;
       /* keep the collapsed 48px bar clear of the controls */
       padding-bottom: calc(48px + var(--s4));
     }

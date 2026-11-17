@@ -40,7 +40,8 @@ to third parties at runtime). It is tall and condensed, and its digits stay
 legible at small sizes, which matters for a timer. (Pixelify Sans was tried
 for body text and dropped: its 5 reads as an S.)
 
-- Timer digits are the biggest thing on the page: `clamp(72px, 18vw, 160px)`.
+- Timer digits are the biggest thing on the page: `clamp(72px, min(20vw, 18vh), 240px)`
+  (`--t-timer`), so they grow with the window but leave room for the scene.
 - Body text is never below 20px.
 
 Scale: 20 / 25 / 30 / 40 / timer. Sentence case everywhere. No all-caps
@@ -92,21 +93,31 @@ Setup, phone: ticket is full width minus 12px gutters, scene peeks out for the
 top 48px. The start button stays reachable without scrolling past the todos
 (it sits above the torn edge).
 
-Timer, desktop: digits top-centre, brew scene (glass + baristas) centred on a
-serving board near the bottom, receipt (todos) docked right at 320px.
+Timer, desktop (1376px and wider): the receipt (todos) is docked top-left under
+the café wordmark at 320px, and collapses to its bar (the choice is remembered
+across reloads). The digits, brew scene (glass + baristas on a serving board)
+and controls form one column centred on the whole window, not on the space
+beside the receipt. The header (digits + status, or the "ready" heading) has a
+fixed height, so the scene stays put when the drink is done.
 
 ```
 +--------------------------------------------------------------+
 | cafe name                      [clocks v] [scene] [mute] [*] |
-|                      24:59                    +-----------+  |
-|                   round 1 of 3                | To do     |  |
-|                                               | [x] ...   |  |
-|                   o  |~~~|  o                 | [ ] ...   |  |
-|                  /|\ |   | /|\                |           |  |
-|  ================ counter ==================  +-----------+  |
-|            [ pause ]        [ leave ]                        |
+| +-----------------+                                          |
+| | To do · 2 left ^|            24:59                          |
+| | [x] ...         |         round 1 of 3                     |
+| | [ ] ...         |                                          |
+| +-----------------+       o  |~~~|  o                        |
+|                          /|\ |   | /|\                       |
+|                    ======= counter =======                   |
+|                   [ pause ]      [ leave ]                   |
 +--------------------------------------------------------------+
 ```
+
+1376px is the 640px column plus a 24px gutter, the 320px receipt and a 24px gap
+on each side, so the docked panel never overlaps the column. Below that
+(including phones) the receipt becomes the bottom sheet described next, and
+always starts closed.
 
 Timer, phone: digits, brew scene, controls stacked; the receipt is a bottom
 sheet collapsed to one line ("3 left") that expands on tap.
