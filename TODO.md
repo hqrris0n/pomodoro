@@ -3,7 +3,7 @@
 - [x] Make the to-do list collapsable
 - [x] Center the timer and drinks with the page
 - [x] Move the to-do list to the left under the title
-- [ ] Add a skip break
+- [x] Add a skip break
 - [x] Add a satisfying pop sound when we click "clear completed"
 - [x] keep the scaling of the floor and cup the same even when the drink is done
 - [x] At the corner of each mix, show a little picture icon to allow the user to pick what background that sound should start playing for; one sound per background max; the user can still pick other sounds after they pick the background so its only tied to the initial change in background
@@ -17,4 +17,4 @@
 - [x] Page-turn sound when the to-do list opens or closes
 - [ ] Sticky notes to people in the same room
 - [x] Fix: the timer starts by itself after clicking Leave
-- [ ] Make the disabled Pause button for guests clearly disabled
+- [x] Make the disabled Pause button for guests clearly disabled

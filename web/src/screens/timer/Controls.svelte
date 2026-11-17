@@ -2,19 +2,23 @@
   let {
     running,
     done,
+    onBreak = false,
     locked,
     lockedBy,
     onpause,
     onresume,
+    onskip,
     onleave,
     onrestart,
   }: {
     running: boolean;
     done: boolean;
+    onBreak?: boolean;
     locked: boolean;
     lockedBy?: string;
     onpause: () => void;
     onresume: () => void;
+    onskip: () => void;
     onleave: () => void;
     onrestart: () => void;
   } = $props();
@@ -78,6 +82,9 @@
       >
         {running ? 'Pause' : 'Resume'}
       </button>
+      {#if onBreak && !locked}
+        <button type="button" class="btn" onclick={onskip}>Skip break</button>
+      {/if}
       <button type="button" class="btn" bind:this={leaveButton} onclick={ask}>{leaveLabel}</button>
     </div>
   {/if}

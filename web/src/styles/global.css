@@ -110,11 +110,15 @@ textarea {
   background: var(--butter);
 }
 
-.btn:disabled {
+/* Disabled: same look as a disabled slider; also wins over .primary. */
+.btn:disabled,
+.btn.primary:disabled {
   cursor: not-allowed;
   background: var(--foam);
+  border-color: var(--plum);
   color: var(--plum);
   box-shadow: none;
+  transform: none;
 }
 
 .visually-hidden {

@@ -81,6 +81,14 @@ export function resumed(state: TimerState, now: number): TimerState {
   return { ...state, anchorAt: now };
 }
 
+/** During a break, jump to the start of the next focus round; otherwise a plain copy. */
+export function skippedBreak(state: TimerState, now: number): TimerState {
+  if (snapshot(state, now).phase !== 'break') return { ...state };
+  const cycle = state.focusMs + state.breakMs;
+  const boundary = (Math.floor(elapsedAt(state, now) / cycle) + 1) * cycle;
+  return { ...state, elapsedMs: boundary, anchorAt: state.anchorAt === null ? null : now };
+}
+
 /** Remaining time rounded up to a whole second: 25:00, 00:59, 1:05:00. */
 export function formatClock(ms: number): string {
   const secs = ms > 0 ? Math.ceil(ms / 1000) : 0;

@@ -1,6 +1,6 @@
 import { load, onOtherTab, save } from '../storage';
 import type { TimerState } from '../types';
-import { newTimer, paused, resumed, snapshot, type TimerView } from './schedule';
+import { newTimer, paused, resumed, skippedBreak, snapshot, type TimerView } from './schedule';
 
 const KEY = 'timer';
 const TICK_MS = 250;
@@ -102,6 +102,25 @@ export class TimerEngine {
     if (this.state) this.#set(resumed(this.state, this.#clock()), true);
   }
 
+  /** End a break early. Reported through onPhaseChange like a break ending on its own. */
+  skipBreak() {
+    if (!this.state) return;
+    const now = this.#clock();
+    if (snapshot(this.state, now).phase !== 'break') return;
+    this.#setReporting(skippedBreak(this.state, now), true);
+  }
+
+  /** #set settles the phase silently; report a change between two live timers, once. */
+  #setReporting(next: TimerState | null, notify: boolean) {
+    const from = this.#lastPhase;
+    this.#set(next, notify);
+    const to = this.#lastPhase;
+    if (from !== null && to !== null && from !== to && this.state) {
+      const view = snapshot(this.state, this.#now);
+      for (const fn of this.#phaseFns) fn(from, to, view);
+    }
+  }
+
   stop() {
     this.#set(null, true);
   }
@@ -113,7 +132,7 @@ export class TimerEngine {
   }
 
   apply(state: TimerState | null) {
-    this.#set(state, false);
+    this.#setReporting(state, false);
   }
 
   setClockOffset(ms: number) {

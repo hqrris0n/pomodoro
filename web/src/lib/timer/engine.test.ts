@@ -30,6 +30,58 @@ describe('TimerEngine', () => {
     expect(fn.mock.calls[0].slice(0, 2)).toEqual(['focus', 'break']);
   });
 
+  it('skipBreak notifies once, reports break to focus once, and tick does not repeat it', () => {
+    const e = new TimerEngine();
+    e.start(opts);
+    vi.advanceTimersByTime(26 * MIN);
+    const phase = vi.fn();
+    const change = vi.fn();
+    e.onPhaseChange(phase);
+    e.onChange(change);
+    e.skipBreak();
+    expect(change).toHaveBeenCalledTimes(1);
+    expect(phase).toHaveBeenCalledTimes(1);
+    expect(phase.mock.calls[0].slice(0, 2)).toEqual(['break', 'focus']);
+    expect(e.view).toMatchObject({ phase: 'focus', round: 2, phaseRemainingMs: 25 * MIN });
+    vi.advanceTimersByTime(2000);
+    expect(phase).toHaveBeenCalledTimes(1);
+    e.skipBreak();
+    expect(change).toHaveBeenCalledTimes(1);
+  });
+
+  it('apply reports a phase change between live timers, but not a join or a stop', () => {
+    const owner = new TimerEngine();
+    owner.start(opts);
+    vi.advanceTimersByTime(26 * MIN);
+    const skipped = (() => {
+      owner.skipBreak();
+      return owner.state!;
+    })();
+
+    const inBreak = {
+      focusMs: 25 * MIN,
+      breakMs: 5 * MIN,
+      rounds: 3,
+      elapsedMs: 26 * MIN,
+      anchorAt: Date.now(),
+    };
+    const guest = new TimerEngine();
+    guest.apply(inBreak);
+    const fn = vi.fn();
+    guest.onPhaseChange(fn);
+    guest.apply(skipped);
+    expect(fn).toHaveBeenCalledTimes(1);
+    expect(fn.mock.calls[0].slice(0, 2)).toEqual(['break', 'focus']);
+
+    const joiner = new TimerEngine();
+    joiner.apply(null);
+    const j = vi.fn();
+    joiner.onPhaseChange(j);
+    joiner.apply(skipped);
+    joiner.apply(null);
+    expect(j).not.toHaveBeenCalled();
+  });
+
   it('does not fire onPhaseChange for a boundary passed while closed', () => {
     new TimerEngine().start(opts);
     vi.setSystemTime(1_000_000 + 26 * MIN);

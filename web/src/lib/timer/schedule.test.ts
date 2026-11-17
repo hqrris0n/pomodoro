@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { elapsedAt, formatClock, newTimer, paused, resumed, snapshot, totalMs } from './schedule';
+import {
+  elapsedAt,
+  formatClock,
+  newTimer,
+  paused,
+  resumed,
+  skippedBreak,
+  snapshot,
+  totalMs,
+} from './schedule';
 import type { TimerState } from '../types';
 
 const MIN = 60_000;
@@ -57,5 +66,35 @@ describe('formatClock', () => {
     expect(formatClock(59_000)).toBe('00:59');
     expect(formatClock(3_900_000)).toBe('1:05:00');
     expect(formatClock(-5)).toBe('00:00');
+  });
+});
+
+describe('skippedBreak', () => {
+  it('lands at the next focus start with a full round left', () => {
+    const next = skippedBreak(base, 27 * MIN);
+    expect(snapshot(next, 27 * MIN)).toMatchObject({
+      phase: 'focus',
+      round: 2,
+      phaseRemainingMs: 25 * MIN,
+      running: true,
+    });
+    expect(next.anchorAt).toBe(27 * MIN);
+  });
+
+  it('keeps a paused timer paused', () => {
+    const p = paused(base, 27 * MIN);
+    const next = skippedBreak(p, 99 * MIN);
+    expect(next.anchorAt).toBeNull();
+    expect(snapshot(next, 99 * MIN)).toMatchObject({
+      phase: 'focus',
+      round: 2,
+      phaseRemainingMs: 25 * MIN,
+      running: false,
+    });
+  });
+
+  it('does nothing in focus or when done', () => {
+    expect(skippedBreak(base, 10 * MIN)).toEqual(base);
+    expect(skippedBreak(base, 200 * MIN)).toEqual(base);
   });
 });

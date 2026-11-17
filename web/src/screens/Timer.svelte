@@ -69,10 +69,12 @@
       <Controls
         running={view.running}
         {done}
+        onBreak={view.phase === 'break'}
         {locked}
         {lockedBy}
         onpause={() => timer.pause()}
         onresume={() => timer.resume()}
+        onskip={() => timer.skipBreak()}
         onrestart={() => timer.restart()}
         {onleave}
       />

@@ -120,6 +120,28 @@ describe('Timer screen', () => {
     expect(sound.chime).toHaveBeenCalledTimes(1);
   });
 
+  it('skips a break on request, with one chime', async () => {
+    timer.apply(stateOf({ rounds: 3, elapsedMs: 26 * MIN }));
+    await mountTimer();
+    expect(screen.getByText(/^Break/)).toBeInTheDocument();
+    await fireEvent.click(screen.getByRole('button', { name: 'Skip break' }));
+    await tick();
+    expect(screen.getByText('Round 2 of 3')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Skip break' })).toBeNull();
+    expect(sound.chime).toHaveBeenCalledTimes(1);
+  });
+
+  it('offers no skip during focus or to a guest', async () => {
+    timer.apply(stateOf({ rounds: 3 }));
+    await mountTimer();
+    expect(screen.queryByRole('button', { name: 'Skip break' })).toBeNull();
+    cleanup();
+    timer.apply(stateOf({ rounds: 3, elapsedMs: 26 * MIN }));
+    await mountTimer({ locked: true, lockedBy: 'Mocha Otter' });
+    expect(screen.getByText(/^Break/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Skip break' })).toBeNull();
+  });
+
   it('finishes with a chime, a notification and two choices', async () => {
     timer.apply(stateOf({ elapsedMs: 25 * MIN - 2000 }));
     const onleave = await mountTimer();
