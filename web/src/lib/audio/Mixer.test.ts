@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/svelte';
 import Mixer from './Mixer.svelte';
-import { sound } from './mixes.svelte';
+import { PRESETS, sound } from './mixes.svelte';
 
 const CHANNELS = [
   { id: 'rain', name: 'Rain', file: 'rain.m4a' },
@@ -19,7 +19,8 @@ function stubFetch(ok = true) {
 // The sound store is a module singleton: put back everything the tests touch.
 function resetStore() {
   localStorage.clear();
-  for (const m of sound.saved) if (!m.builtIn) sound.deleteSaved(m.id);
+  for (const m of [...sound.saved]) sound.deleteSaved(m.id);
+  sound['userMixes'] = PRESETS.map((p) => ({ ...p, mix: { ...p.mix } }));
   sound.channels = [];
   sound.error = null;
   sound.mix = {};
@@ -80,13 +81,15 @@ describe('Mixer', () => {
     expect(sound.mix.rain).toBe(0.3);
   });
 
-  it('loads built-in mixes and un-presses on a slider change', async () => {
+  it('loads preset mixes and un-presses on a slider change', async () => {
     await setup();
     for (const n of ['Quiet morning', 'Busy café', 'Rainy day']) {
       expect(screen.getByRole('button', { name: n })).toHaveAttribute('aria-pressed', 'false');
     }
-    expect(screen.queryByRole('button', { name: /^Rename / })).toBeNull();
-    expect(screen.queryByRole('button', { name: /^Delete / })).toBeNull();
+    for (const n of ['Quiet morning', 'Busy café', 'Rainy day']) {
+      expect(screen.getByRole('button', { name: `Rename ${n}` })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: `Delete ${n}` })).toBeInTheDocument();
+    }
     await fireEvent.click(screen.getByRole('button', { name: 'Rainy day' }));
     expect(screen.getByRole('button', { name: 'Rainy day' })).toHaveAttribute(
       'aria-pressed',
@@ -119,7 +122,7 @@ describe('Mixer', () => {
     const rename = screen.getByRole('textbox', { name: 'New name for Focus' });
     await fireEvent.input(rename, { target: { value: 'Rainy day' } });
     await fireEvent.keyDown(rename, { key: 'Enter' });
-    expect(screen.getByText('That name is taken by a built-in mix.')).toBeInTheDocument();
+    expect(screen.getByText('Another mix already has that name.')).toBeInTheDocument();
     await fireEvent.input(rename, { target: { value: 'Deep work' } });
     await fireEvent.keyDown(rename, { key: 'Enter' });
     expect(screen.getByRole('button', { name: 'Deep work' })).toBeInTheDocument();

@@ -3,7 +3,7 @@ import type { Mix, SoundChannel } from '../types';
 import { scenes } from '../backgrounds/registry';
 import { AudioEngine } from './engine';
 
-export type SavedMix = { id: string; name: string; mix: Mix; builtIn: boolean };
+export type SavedMix = { id: string; name: string; mix: Mix };
 
 type EngineLike = Pick<
   AudioEngine,
@@ -11,22 +11,23 @@ type EngineLike = Pick<
 >;
 
 type SoundPrefs = { mix: Mix; levels: Mix; master: number; muted: boolean; enabled: boolean };
-type StoredMix = { id: string; name: string; mix: Mix };
 
 const MAX_NAME = 30;
 const DEFAULT_LEVEL = 0.5;
 
-const builtIn = (id: string, name: string, mix: Mix): SavedMix => ({
-  id: `builtin:${id}`,
-  name,
-  mix,
-  builtIn: true,
-});
-
-const BUILT_INS: SavedMix[] = [
-  builtIn('quiet-morning', 'Quiet morning', { hum: 0.5, pages: 0.3, dishes: 0.2 }),
-  builtIn('busy-cafe', 'Busy café', { chatter: 0.7, espresso: 0.5, dishes: 0.4, hum: 0.3 }),
-  builtIn('rainy-day', 'Rainy day', { rain: 0.7, fireplace: 0.4, hum: 0.2 }),
+/** Seeded once into a user's saved mixes; after that they are ordinary mixes. */
+export const PRESETS: SavedMix[] = [
+  {
+    id: 'builtin:quiet-morning',
+    name: 'Quiet morning',
+    mix: { hum: 0.5, pages: 0.3, dishes: 0.2 },
+  },
+  {
+    id: 'builtin:busy-cafe',
+    name: 'Busy café',
+    mix: { chatter: 0.7, espresso: 0.5, dishes: 0.4, hum: 0.3 },
+  },
+  { id: 'builtin:rainy-day', name: 'Rainy day', mix: { rain: 0.7, fireplace: 0.4, hum: 0.2 } },
 ];
 
 const clamp01 = (n: number) => Math.min(1, Math.max(0, n));
@@ -60,14 +61,11 @@ export class SoundStore {
   master = $state(0.8);
   muted = $state(false);
   enabled = $state(false);
-  private userMixes = $state<StoredMix[]>([]);
+  private userMixes = $state<SavedMix[]>([]);
   /** backgroundId -> mixId: the mix that starts when that background is chosen. */
   links = $state<Record<string, string>>({});
 
-  saved = $derived<SavedMix[]>([
-    ...BUILT_INS,
-    ...this.userMixes.map((m) => ({ ...m, builtIn: false })),
-  ]);
+  saved = $derived<SavedMix[]>(this.userMixes);
   activeSavedId = $derived<string | null>(
     this.saved.find((s) => sameMix(s.mix, this.mix))?.id ?? null,
   );
@@ -84,7 +82,7 @@ export class SoundStore {
     }
     this.muted = prefs.muted === true;
     this.enabled = prefs.enabled === true;
-    const stored = load<unknown>('mixes', []);
+    const stored = load<unknown>('mixes', null);
     if (Array.isArray(stored)) {
       for (const m of stored) {
         if (
@@ -98,6 +96,7 @@ export class SoundStore {
         }
       }
     }
+    this.seedPresets(stored === null);
     const storedLinks = load<unknown>('mixLinks', {});
     if (storedLinks && typeof storedLinks === 'object' && !Array.isArray(storedLinks)) {
       for (const [bg, mixId] of Object.entries(storedLinks)) {
@@ -222,7 +221,18 @@ export class SoundStore {
     this.persistLinks();
   }
 
-  /** Returns an error message, or null on success. No-op (null) on built-ins and unknown ids. */
+  /** Add the presets once: on first load, or once for storage that predates them. */
+  private seedPresets(fresh: boolean): void {
+    if (!fresh && load<unknown>('presetsSeeded', false) === true) return;
+    const add = PRESETS.filter((p) =>
+      this.userMixes.every((u) => u.id !== p.id && u.name.toLowerCase() !== p.name.toLowerCase()),
+    ).map((p) => ({ ...p, mix: { ...p.mix } }));
+    this.userMixes.unshift(...add);
+    this.persistMixes();
+    save('presetsSeeded', true);
+  }
+
+  /** Returns an error message, or null on success. No-op (null) on unknown ids. */
   renameSaved(id: string, name: string): string | null {
     const target = this.userMixes.find((m) => m.id === id);
     if (!target) return null;
@@ -276,9 +286,6 @@ export class SoundStore {
   private validateName(n: string): string | null {
     if (!n) return 'Give the mix a name.';
     if (n.length > MAX_NAME) return `Keep the name to ${MAX_NAME} characters or fewer.`;
-    if (BUILT_INS.some((b) => b.name.toLowerCase() === n.toLowerCase())) {
-      return 'That name is taken by a built-in mix.';
-    }
     return null;
   }
 

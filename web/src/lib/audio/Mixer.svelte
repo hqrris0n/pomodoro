@@ -185,8 +185,7 @@
             <span class="chip">
               <button
                 type="button"
-                class="btn"
-                class:has-icons={!m.builtIn}
+                class="btn has-icons"
                 aria-pressed={sound.activeSavedId === m.id}
                 {disabled}
                 onclick={() => sound.loadSaved(m.id)}
@@ -223,26 +222,24 @@
                 </svg>
               </button>
             </span>
-            {#if !m.builtIn}
-              <button
-                type="button"
-                class="icon"
-                aria-label={`Rename ${m.name}`}
-                {disabled}
-                onclick={() => startRename(m.id, m.name)}
-              >
-                <span class="pencil" aria-hidden="true"></span>
-              </button>
-              <button
-                type="button"
-                class="icon del"
-                aria-label={`Delete ${m.name}`}
-                {disabled}
-                onclick={() => sound.deleteSaved(m.id)}
-              >
-                <span class="cross" aria-hidden="true"></span>
-              </button>
-            {/if}
+            <button
+              type="button"
+              class="icon"
+              aria-label={`Rename ${m.name}`}
+              {disabled}
+              onclick={() => startRename(m.id, m.name)}
+            >
+              <span class="pencil" aria-hidden="true"></span>
+            </button>
+            <button
+              type="button"
+              class="icon del"
+              aria-label={`Delete ${m.name}`}
+              {disabled}
+              onclick={() => sound.deleteSaved(m.id)}
+            >
+              <span class="cross" aria-hidden="true"></span>
+            </button>
           {/if}
         </li>
       {/each}

@@ -114,42 +114,83 @@ describe('SoundStore state', () => {
 });
 
 describe('SoundStore saved mixes', () => {
-  it('rejects empty, built-in, and over-long names', () => {
+  it('rejects empty and over-long names', () => {
     const { store } = make();
     expect(store.saveCurrent('  ')).toBe('Give the mix a name.');
-    expect(store.saveCurrent('rainy day')).toBe('That name is taken by a built-in mix.');
     expect(store.saveCurrent('x'.repeat(31))).not.toBeNull();
     expect(store.saved).toHaveLength(3);
   });
 
-  it('overwrites a same-named user mix', () => {
+  it('overwrites a same-named mix', () => {
     const { store } = make();
     store.setVolume('rain', 0.5);
     expect(store.saveCurrent('Mine')).toBeNull();
     store.setVolume('rain', 0.9);
     expect(store.saveCurrent(' mine ')).toBeNull();
-    const user = store.saved.filter((s) => !s.builtIn);
+    const user = store.saved.filter((s) => s.name.toLowerCase() === 'mine');
     expect(user).toHaveLength(1);
     expect(user[0].mix).toEqual({ rain: 0.9 });
+    expect(store.saved).toHaveLength(4);
   });
 
-  it('renames and deletes user mixes but not built-ins', () => {
+  it('saving under a preset name overwrites the preset in place', () => {
+    const { store } = make();
+    store.setVolume('rain', 0.9);
+    expect(store.saveCurrent('rainy day')).toBeNull();
+    expect(store.saved).toHaveLength(3);
+    const rainy = store.saved[2];
+    expect(rainy.id).toBe('builtin:rainy-day');
+    expect(rainy.name).toBe('rainy day');
+    expect(rainy.mix).toEqual({ rain: 0.9 });
+  });
+
+  it('seeds the three presets on a fresh start and persists them', () => {
+    make();
+    const stored = JSON.parse(localStorage.getItem('cafe:mixes')!);
+    expect(stored.map((m: { id: string }) => m.id)).toEqual([
+      'builtin:quiet-morning',
+      'builtin:busy-cafe',
+      'builtin:rainy-day',
+    ]);
+    expect(JSON.parse(localStorage.getItem('cafe:presetsSeeded')!)).toBe(true);
+  });
+
+  it('renames and deletes presets like any mix, across stores, without re-seeding', () => {
     const { store } = make();
     store.setVolume('rain', 0.5);
     store.saveCurrent('Mine');
-    const mine = store.saved.find((s) => !s.builtIn)!;
-    const builtIn = store.saved[0];
+    store.setLink('night-lights', 'builtin:busy-cafe', true);
 
-    store.renameSaved(builtIn.id, 'Other');
-    store.deleteSaved(builtIn.id);
-    expect(store.saved[0].name).toBe('Quiet morning');
-    expect(store.saved).toHaveLength(4);
+    expect(store.renameSaved('builtin:quiet-morning', 'Calm')).toBeNull();
+    expect(store.renameSaved('builtin:quiet-morning', 'mine')).toBe(
+      'Another mix already has that name.',
+    );
+    store.deleteSaved('builtin:busy-cafe');
+    expect(store.links).toEqual({});
 
-    expect(store.renameSaved(mine.id, 'Renamed')).toBeNull();
-    expect(store.saved.find((s) => s.id === mine.id)!.name).toBe('Renamed');
-    expect(store.renameSaved(mine.id, 'Busy café')).toBe('That name is taken by a built-in mix.');
-    store.deleteSaved(mine.id);
-    expect(store.saved).toHaveLength(3);
+    const again = make().store;
+    expect(again.saved.map((s) => s.name)).toEqual(['Calm', 'Rainy day', 'Mine']);
+    again.deleteSaved('builtin:rainy-day');
+    again.deleteSaved('builtin:quiet-morning');
+    again.deleteSaved(again.saved[0].id);
+    expect(make().store.saved).toEqual([]);
+  });
+
+  it('prepends the presets once to existing storage, skipping a name clash', () => {
+    localStorage.setItem(
+      'cafe:mixes',
+      JSON.stringify([{ id: 'u1', name: 'busy CAFÉ', mix: { rain: 0.2 } }]),
+    );
+    const store = make().store;
+    expect(store.saved.map((s) => s.name)).toEqual(['Quiet morning', 'Rainy day', 'busy CAFÉ']);
+    store.deleteSaved('builtin:rainy-day');
+    expect(make().store.saved.map((s) => s.name)).toEqual(['Quiet morning', 'busy CAFÉ']);
+  });
+
+  it('does not seed an existing empty list once the flag is set', () => {
+    localStorage.setItem('cafe:mixes', '[]');
+    localStorage.setItem('cafe:presetsSeeded', 'true');
+    expect(make().store.saved).toEqual([]);
   });
 
   it('remembers an off channel level across stores and survives garbage', () => {
@@ -173,7 +214,12 @@ describe('SoundStore saved mixes', () => {
     expect(again.master).toBe(0.4);
     expect(again.muted).toBe(true);
     expect(again.enabled).toBe(false);
-    expect(again.saved.filter((s) => !s.builtIn).map((s) => s.name)).toEqual(['Mine']);
+    expect(again.saved.map((s) => s.name)).toEqual([
+      'Quiet morning',
+      'Busy café',
+      'Rainy day',
+      'Mine',
+    ]);
     expect(engine.mixes.at(-1)).toEqual({});
   });
 });

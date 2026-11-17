@@ -12,7 +12,7 @@
 - [ ] Clock toggle in the top bar, 12/24-hour setting, timer shown smaller under the time
 - [x] Bigger timer digits (up to 240px)
 - [ ] User profiles saved on the server (username, display name, "Order for" card, delete user)
-- [ ] Let each user edit the preset mixes
+- [x] Let each user edit the preset mixes
 - [x] Rename "Café timer" to "Pomo Café"
 - [x] Page-turn sound when the to-do list opens or closes
 - [ ] Sticky notes to people in the same room
