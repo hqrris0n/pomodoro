@@ -36,6 +36,8 @@
   --t3: 30px;
   --t4: 40px;
   --t-timer: clamp(72px, min(20vw, 18vh), 240px);
+  /* The clock plus the half-size countdown under it is 1.5x this tall. */
+  --t-clock: clamp(56px, min(18vw, 12vh), 240px);
 
   /* chrome */
   --border: var(--px) solid var(--ink);

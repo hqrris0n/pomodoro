@@ -97,4 +97,66 @@ test.describe('timer layout', () => {
     );
     expect(fits).toBe(true);
   });
+
+  test.describe('with the clock on', () => {
+    test.beforeEach(async ({ page }) => {
+      await page.route('**/api/**', (route) => route.abort());
+      await page.addInitScript(() => localStorage.setItem('cafe:clockShow', 'true'));
+    });
+
+    test('the scene does not move when the drink is done', async ({ page }) => {
+      await page.goto('/');
+      await page.getByRole('button', { name: 'Start brewing' }).click();
+      await expect(page.getByRole('timer')).toBeVisible();
+      await expect(page.locator('.head time')).toBeVisible();
+      const scene = page.locator('.column .scene');
+      const running = await scene.boundingBox();
+
+      await page.evaluate(() => {
+        const t = JSON.parse(localStorage.getItem('cafe:timer')!);
+        t.anchorAt -= 4 * 3600_000;
+        localStorage.setItem('cafe:timer', JSON.stringify(t));
+      });
+      await page.reload();
+      await expect(page.getByRole('heading', { name: /is ready/ })).toBeVisible();
+      await expect(page.locator('.head time')).toBeVisible();
+      const done = await scene.boundingBox();
+      expect(Math.abs(done!.y - running!.y)).toBeLessThanOrEqual(1);
+    });
+
+    test('the running screen fits without scrolling', async ({ page }, info) => {
+      const sizes =
+        info.project.name === 'desktop'
+          ? [
+              { width: 1280, height: 720 },
+              { width: 1440, height: 900 },
+            ]
+          : [null];
+      for (const size of sizes) {
+        if (size) await page.setViewportSize(size);
+        await page.goto('/');
+        await page.getByRole('button', { name: 'Start brewing' }).click();
+        await expect(page.getByRole('timer')).toBeVisible();
+        const fits = await page.evaluate(
+          () => document.documentElement.scrollHeight <= window.innerHeight,
+        );
+        expect(fits).toBe(true);
+        await page.getByRole('button', { name: 'Leave' }).click();
+        await page.getByRole('button', { name: 'Leave' }).click();
+      }
+    });
+
+    test('the setup screen shows the time in the right half on wide windows', async ({
+      page,
+    }, info) => {
+      test.skip(info.project.name !== 'desktop', 'desktop layout');
+      await page.setViewportSize({ width: 1280, height: 720 });
+      await page.goto('/');
+      const box = await page.locator('time').boundingBox();
+      expect(box!.x).toBeGreaterThanOrEqual(640);
+      expect(Math.abs(box!.x + box!.width / 2 - 960)).toBeLessThanOrEqual(2);
+      await page.setViewportSize({ width: 800, height: 720 });
+      await expect(page.locator('time')).toBeHidden();
+    });
+  });
 });

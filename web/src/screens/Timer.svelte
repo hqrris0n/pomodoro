@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { sound } from '../lib/audio/mixes.svelte';
+  import ClockTime from '../lib/clock/ClockTime.svelte';
+  import { clock } from '../lib/clock/clock.svelte';
   import { drinks } from '../lib/drinks/drinks.svelte';
   import BrewScene from '../lib/scene/BrewScene.svelte';
   import { identity } from '../lib/shell/identity.svelte';
@@ -49,13 +51,14 @@
 {#if view}
   <div class="screen">
     <main class="column">
-      <div class="head">
+      <div class="head" class:with-clock={clock.show}>
+        {#if clock.show}<ClockTime />{/if}
         {#if done}
           <h1 class="ready">
             {drink ? `Your ${drink.name.toLowerCase()} is ready` : 'Your drink is ready'}
           </h1>
         {:else}
-          <Countdown ms={view.phaseRemainingMs} />
+          <Countdown ms={view.phaseRemainingMs} muted={clock.show} />
           <p class="status">{status}</p>
         {/if}
       </div>
@@ -103,6 +106,10 @@
     --head-h: calc(var(--t-timer) + var(--s3) - var(--s2) + 1.4 * var(--t2));
   }
 
+  .column:has(.head.with-clock) {
+    --head-h: calc(1.5 * var(--t-clock) + 2 * var(--s1) + 1.4 * var(--t2));
+  }
+
   .head {
     height: var(--head-h);
     flex: none;
@@ -112,6 +119,15 @@
     align-items: center;
     justify-content: center;
     gap: var(--s3);
+  }
+
+  /* Clock on: clock, half-size countdown and status in one fixed block. */
+  .head.with-clock {
+    gap: var(--s1);
+  }
+
+  .head.with-clock .status {
+    margin: 0;
   }
 
   .status {

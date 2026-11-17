@@ -2,6 +2,7 @@
   import { tick } from 'svelte';
   import { backgrounds } from '../backgrounds/backgrounds.svelte';
   import Mixer from '../audio/Mixer.svelte';
+  import { clock } from '../clock/clock.svelte';
   import { identity } from './identity.svelte';
   import IconClose from './icons/IconClose.svelte';
   import Toggle from './Toggle.svelte';
@@ -138,6 +139,24 @@
           {/each}
         </select>
       </label>
+    </section>
+
+    <section aria-labelledby="clock-heading">
+      <h3 id="clock-heading">Clock</h3>
+      <div class="seg" role="radiogroup" aria-labelledby="clock-heading">
+        {#each [['12', '12-hour'], ['24', '24-hour']] as const as [value, text] (value)}
+          <label>
+            <input
+              type="radio"
+              name="clock-format"
+              {value}
+              checked={clock.format === value}
+              onchange={() => (clock.format = value)}
+            />
+            <span>{text}</span>
+          </label>
+        {/each}
+      </div>
     </section>
 
     <section aria-labelledby="you-heading">
@@ -280,6 +299,46 @@
     background: var(--foam);
     color: var(--plum);
     cursor: not-allowed;
+  }
+
+  .seg {
+    display: flex;
+  }
+
+  .seg label {
+    position: relative;
+    flex: 1;
+  }
+
+  .seg input {
+    position: absolute;
+    opacity: 0;
+    inset: 0;
+    margin: 0;
+    cursor: pointer;
+  }
+
+  .seg span {
+    display: grid;
+    place-items: center;
+    min-height: 42px;
+    padding: var(--s1) var(--s2);
+    background: var(--white);
+    border: var(--border);
+  }
+
+  .seg label + label span {
+    border-left-width: 0;
+  }
+
+  .seg input:checked + span {
+    background: var(--butter);
+    box-shadow: inset 0 calc(var(--px) * -1) 0 var(--caramel);
+  }
+
+  .seg input:focus-visible + span {
+    outline: var(--px) solid var(--butter);
+    outline-offset: var(--px);
   }
 
   .error {

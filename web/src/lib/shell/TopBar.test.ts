@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/svelte';
 import { sound } from '../audio/mixes.svelte';
+import { clock } from '../clock/clock.svelte';
 import TopBar from './TopBar.svelte';
 
 describe('TopBar mute button', () => {
@@ -39,5 +40,24 @@ describe('TopBar mute button', () => {
     render(TopBar, { onsettings });
     await fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
     expect(onsettings).toHaveBeenCalledOnce();
+  });
+});
+
+describe('TopBar clock button', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    clock.show = false;
+  });
+  afterEach(cleanup);
+
+  it('toggles the clock and its pressed state', async () => {
+    render(TopBar, { onsettings: vi.fn() });
+    const button = screen.getByRole('button', { name: 'Show the time' });
+    expect(button).toHaveAttribute('aria-pressed', 'false');
+    await fireEvent.click(button);
+    expect(clock.show).toBe(true);
+    expect(button).toHaveAttribute('aria-pressed', 'true');
+    await fireEvent.click(button);
+    expect(clock.show).toBe(false);
   });
 });

@@ -1,4 +1,6 @@
 <script lang="ts">
+  import ClockTime from '../lib/clock/ClockTime.svelte';
+  import { clock } from '../lib/clock/clock.svelte';
   import DrinkPicker from '../lib/drinks/DrinkPicker.svelte';
   import TodoList from '../lib/todos/TodoList.svelte';
   import { timer } from '../lib/timer/engine.svelte';
@@ -32,6 +34,10 @@
     <TodoList />
   </div>
 </main>
+
+{#if clock.show}
+  <div class="clock-half"><ClockTime /></div>
+{/if}
 
 <style>
   .ticket {
@@ -88,7 +94,25 @@
     padding: var(--s3) var(--s3) var(--s4);
   }
 
+  /* Wide windows only: the time is centred in the right half, clear of the ticket. */
+  .clock-half {
+    display: none;
+  }
+
   @media (min-width: 900px) {
+    .clock-half {
+      position: fixed;
+      top: var(--topbar-height);
+      bottom: 0;
+      left: 50%;
+      right: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      pointer-events: none;
+      --clock-size: clamp(72px, min(9vw, 20vh), 240px);
+    }
+
     .ticket {
       width: var(--ticket-width);
       margin: var(--s4) 0 var(--s6) var(--s6);

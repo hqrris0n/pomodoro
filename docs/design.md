@@ -42,6 +42,11 @@ for body text and dropped: its 5 reads as an S.)
 
 - Timer digits are the biggest thing on the page: `clamp(72px, min(20vw, 18vh), 240px)`
   (`--t-timer`), so they grow with the window but leave room for the scene.
+- The clock (toggle in the top bar) uses the same digits at `--t-clock`
+  (`clamp(56px, min(18vw, 12vh), 240px)`), with AM/PM at 0.4em beside the
+  digits. The countdown under it is half that size, in `--sky`. Clock and
+  half-size countdown together are 1.5 × `--t-clock`, about the height of
+  the full-size countdown.
 - Body text is never below 20px.
 
 Scale: 20 / 25 / 30 / 40 / timer. Sentence case everywhere. No all-caps
@@ -89,6 +94,10 @@ ticket is left-aligned.
 +--------------------------------------------------------------+
 ```
 
+Setup, desktop, clock on: the time is centred in the right half of the window
+(50% to 100% of the width), vertically centred below the top bar, and sized
+by width so it stays clear of the ticket. Not shown below 900px.
+
 Setup, phone: ticket is full width minus 12px gutters, scene peeks out for the
 top 48px. The start button stays reachable without scrolling past the todos
 (it sits above the torn edge).
@@ -118,6 +127,12 @@ fixed height, so the scene stays put when the drink is done.
 on each side, so the docked panel never overlaps the column. Below that
 (including phones) the receipt becomes the bottom sheet described next, and
 always starts closed.
+
+Timer, clock on (any width): the header holds the time at full size, the
+countdown below it at half size in `--sky`, then the status line (on done, the
+time sits above the "ready" heading). Its fixed height is
+`1.5 * --t-clock + 2 * --s1 + status`, and the scene-height calc uses it, so
+nothing scrolls or moves.
 
 Timer, phone: digits, brew scene, controls stacked; the receipt is a bottom
 sheet collapsed to one line ("3 left") that expands on tap.

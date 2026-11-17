@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { backgrounds } from '../backgrounds/backgrounds.svelte';
+import { clock } from '../clock/clock.svelte';
 import { identity } from './identity.svelte';
 import SettingsPanel from './SettingsPanel.svelte';
 
@@ -45,6 +46,15 @@ describe('SettingsPanel', () => {
     const select = screen.getByLabelText('Change scene automatically');
     await fireEvent.change(select, { target: { value: '15' } });
     expect(backgrounds.rotateMin).toBe(15);
+  });
+
+  it('switches the clock between 12-hour and 24-hour', async () => {
+    clock.format = '12';
+    render(SettingsPanel, { open: true });
+    expect(screen.getByLabelText('12-hour')).toBeChecked();
+    await fireEvent.click(screen.getByLabelText('24-hour'));
+    expect(clock.format).toBe('24');
+    clock.format = '12';
   });
 
   it('disables shared settings and explains when locked', () => {

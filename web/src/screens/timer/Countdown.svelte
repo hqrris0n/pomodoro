@@ -1,7 +1,7 @@
 <script lang="ts">
   import { formatClock } from '../../lib/timer/schedule';
 
-  let { ms }: { ms: number } = $props();
+  let { ms, muted = false }: { ms: number; muted?: boolean } = $props();
 
   const clock = $derived(formatClock(ms));
   const label = $derived.by(() => {
@@ -19,7 +19,7 @@
 </script>
 
 <!-- A timer role is not a live region, so it is not announced every second. -->
-<div class="countdown" role="timer" aria-label={label}>
+<div class="countdown" class:muted role="timer" aria-label={label}>
   {#each clock.split('') as ch, i (i)}
     <span class="cell" class:colon={ch === ':'} aria-hidden="true">{ch}</span>
   {/each}
@@ -37,6 +37,12 @@
     paint-order: stroke fill;
     text-shadow: calc(var(--px) * 2) calc(var(--px) * 2) 0 var(--ink);
     user-select: none;
+  }
+
+  /* Under the clock: half its size, in sky. */
+  .countdown.muted {
+    font-size: calc(var(--t-clock) / 2);
+    color: var(--sky);
   }
 
   /* Fixed-width cells so the digits never jiggle as the time changes. */

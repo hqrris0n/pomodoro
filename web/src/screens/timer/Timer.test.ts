@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { sound } from '../../lib/audio/mixes.svelte';
+import { clock } from '../../lib/clock/clock.svelte';
 import { drinks } from '../../lib/drinks/drinks.svelte';
 import { timer } from '../../lib/timer/engine.svelte';
 import { identity } from '../../lib/shell/identity.svelte';
@@ -78,6 +79,26 @@ describe('Timer screen', () => {
     expect(screen.getByRole('timer')).toHaveAttribute('aria-label', '24 minutes 0 seconds left');
     expect(screen.queryByText(/Round|Paused|Break/)).toBeNull();
     expect(scene()).toHaveAttribute('data-mode', 'brewing');
+  });
+
+  it('shows the time above the countdown only when the clock is on', async () => {
+    timer.apply(stateOf());
+    clock.show = false;
+    const { container } = render(Timer, { onleave: vi.fn() });
+    await vi.waitFor(() => expect(screen.queryByTestId('scene')).not.toBeNull());
+    expect(container.querySelector('time')).toBeNull();
+    cleanup();
+
+    clock.show = true;
+    clock.format = '24';
+    const view = render(Timer, { onleave: vi.fn() });
+    await vi.waitFor(() => expect(screen.queryByTestId('scene')).not.toBeNull());
+    const time = view.container.querySelector('time');
+    expect(time).not.toBeNull();
+    expect(time).toHaveAttribute('aria-label', expect.stringMatching(/^Current time \d\d:\d\d$/));
+    expect(screen.getByRole('timer')).toHaveAttribute('aria-label', '25 minutes 0 seconds left');
+    clock.show = false;
+    clock.format = '12';
   });
 
   it('pauses and resumes', async () => {

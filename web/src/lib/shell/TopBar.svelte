@@ -1,6 +1,8 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
   import { sound } from '../audio/mixes.svelte';
+  import { clock } from '../clock/clock.svelte';
+  import IconClock from './icons/IconClock.svelte';
   import IconCup from './icons/IconCup.svelte';
   import IconGear from './icons/IconGear.svelte';
   import IconSoundOff from './icons/IconSoundOff.svelte';
@@ -28,6 +30,15 @@
   <div class="actions">
     {@render clocks?.()}
     {@render scenes?.()}
+    <button
+      type="button"
+      class="btn icon"
+      aria-pressed={clock.show}
+      aria-label="Show the time"
+      onclick={() => (clock.show = !clock.show)}
+    >
+      <IconClock />
+    </button>
     <button
       type="button"
       class="btn icon"
