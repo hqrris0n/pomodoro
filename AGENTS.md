@@ -1,8 +1,8 @@
 # Café Pomodoro
 
 A café-themed pomodoro timer: a Vite + Svelte 5 + TypeScript single-page app
-(not SvelteKit), built to static files. A small Go server (in `server/`, added
-later) serves them and provides the `/api` endpoints.
+(not SvelteKit), built to static files. A small Go server (in `server/`,
+standard library only) serves them and provides the `/api` endpoints.
 
 ## Layout
 
@@ -16,7 +16,8 @@ later) serves them and provides the `/api` endpoints.
 - `web/src/lib/storage.ts` - `load`/`save` JSON in localStorage under the `cafe:` prefix.
 - `web/public/drinks/`, `web/public/sounds/` - static assets, served as-is.
 - `web/e2e/` - Playwright tests (chromium; desktop and Pixel 7 projects).
-- `server/` - Go server (empty for now).
+- `server/` - Go server: static files plus the in-memory rooms API.
+- `Dockerfile`, `compose.yml`, `deploy/` - container build and a sample Caddy config.
 - `docs/` - `design.md` (design rules) and `protocol.md` (server protocol).
 
 ## Commands (run from `web/`)
@@ -29,6 +30,9 @@ later) serves them and provides the `/api` endpoints.
 - Unit tests: `npm run test`
 - E2E tests: `npm run e2e`
 - Production build: `npm run build` (output in `web/dist`)
+
+Server (from `server/`; Go 1.27, or the `golang:1.27` image): `gofmt -l .`,
+`go vet ./...`, `go test -race ./...`. Whole app: `docker build -t cafe-timer .`
 
 ## Conventions
 
