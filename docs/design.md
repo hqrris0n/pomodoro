@@ -89,11 +89,11 @@ ticket is left-aligned.
 ```
 
 Setup, phone: ticket is full width minus 12px gutters, scene peeks out for the
-top 96px. The start button stays reachable without scrolling past the todos
+top 48px. The start button stays reachable without scrolling past the todos
 (it sits above the torn edge).
 
 Timer, desktop: digits top-centre, brew scene (glass + baristas) centred on a
-counter strip along the bottom, receipt (todos) docked right at 320px.
+serving board near the bottom, receipt (todos) docked right at 320px.
 
 ```
 +--------------------------------------------------------------+
