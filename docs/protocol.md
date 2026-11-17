@@ -72,11 +72,12 @@ room at all.
 | `POST /rooms/{id}/leave`      | member  | —                                 | Leaves. |
 | `PATCH /rooms/{id}`           | host, co-host | `{settings?, timer?}`             | Replaces the given parts. |
 | `POST /rooms/{id}/role`       | host    | `{memberId, role}`                | Sets that member's role to `"cohost"` or `"guest"`. The host's own role cannot change (400); an unknown member is 404. |
+| `POST /rooms/{id}/notes`      | member  | `{to, text}`                      | Sends a sticky note to another member of the room. Returns `202 {id}`. |
 | `PUT /me`                     | anyone  | `{name}`                          | Renames the caller in their room. |
 | `GET /health`                 | anyone  | —                                 | `200 ok` |
 
 Responses: `POST /rooms`, `join`, `PATCH` and `role` return the `Room`;
-`leave` and `PUT /me` return `{}`. `name` in a body is optional and falls back
+`leave` and `PUT /me` return `{}`; `notes` returns `202 {id}`. `name` in a body is optional and falls back
 to the name given on the stream. `PUT /me` while in no room is a 403 (the name
 is sent again with the next create or join). Joining the room you are already
 in returns it unchanged.
@@ -94,7 +95,32 @@ in returns it unchanged.
 - `room` — `{now, you: memberId, room: Room | null}`. Sent on connect and
   whenever the caller's room changes; `null` when they are in no room or it
   was removed.
+- `note` — `{id, roomId, fromId, fromName, text, sentAt}` (`sentAt` is server
+  epoch ms). A sticky note sent to the caller; see below.
 - A comment line `: ping` every 25s to keep proxies from closing the stream.
+
+## Sticky notes
+
+Any member can send a short note to any other member of the same room,
+whatever their roles. Notes are not part of `Room` or `RoomSummary`.
+
+- `POST /api/rooms/{id}/notes` with `{to: memberId, text}`. The caller must be
+  in the room (403, or 404 if the room does not exist); `to` must be another
+  member of that room (400 for yourself, 404 for an unknown member or someone
+  who has left).
+- `text` is trimmed and must be 1 to 140 characters, counted as Unicode code
+  points, not bytes. Control characters other than newline (`\n`) are rejected
+  with 400, not stripped. Anything else is 400 with `{error}`.
+- Rate limit: at most 5 accepted notes per sender token per rolling 60s, then
+  429. Rejected requests do not count. This is separate from the general
+  command limit.
+- Delivery is a `note` event on the recipient's stream, sent once. If the
+  recipient has no open stream (for example mid-reconnect), the note waits in a
+  per-member queue of at most 20 (the oldest is dropped) and is sent right
+  after the initial `rooms` and `room` events when their stream connects. The
+  queue is discarded when the member leaves the room or the room is removed.
+  Notes are held in memory only. Keeping a note on screen until dismissed is
+  the client's job.
 
 ## Lifecycle rules
 

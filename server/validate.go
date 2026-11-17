@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -45,7 +46,19 @@ type RoomSummary struct {
 	Timer       Timer  `json:"timer"`
 }
 
+// Note is the payload of the `note` SSE event.
+type Note struct {
+	ID       string `json:"id"`
+	RoomID   string `json:"roomId"`
+	FromID   string `json:"fromId"`
+	FromName string `json:"fromName"`
+	Text     string `json:"text"`
+	SentAt   int64  `json:"sentAt"`
+}
+
 const (
+	maxNoteLen = 140
+
 	roleHost   = "host"
 	roleCohost = "cohost"
 	roleGuest  = "guest"
@@ -141,4 +154,19 @@ func validToken(s string) bool {
 		}
 	}
 	return true
+}
+
+// validateNoteText trims a sticky note and checks it is 1-140 runes. Control
+// characters other than newline are rejected, not stripped.
+func validateNoteText(s string) (string, error) {
+	s = strings.TrimSpace(s)
+	if n := utf8.RuneCountInString(s); n < 1 || n > maxNoteLen {
+		return "", badRequest("note must be 1 to 140 characters")
+	}
+	for _, r := range s {
+		if r != '\n' && unicode.IsControl(r) {
+			return "", badRequest("note may not contain control characters")
+		}
+	}
+	return s, nil
 }

@@ -488,3 +488,184 @@ func TestStreamNameIsUsedWhenBodyHasNone(t *testing.T) {
 		t.Fatal("rename not applied")
 	}
 }
+
+// noteSetup makes a room with Ada (host, tok 1), Bo (tok 2) and Cy (tok 3),
+// all connected, with their initial events drained.
+func noteSetup(t *testing.T) (*hub, *fakeClock, string, [4]*conn) {
+	t.Helper()
+	h, clk := newTestHub()
+	var cns [4]*conn
+	for i := 1; i <= 3; i++ {
+		cn, err := h.Connect(tok(i), fmt.Sprintf("U%d", i))
+		if err != nil {
+			t.Fatal(err)
+		}
+		cns[i] = cn
+	}
+	room := mustCreate(t, h, tok(1), "Ada")
+	mustJoin(t, h, tok(2), room.ID, "Bo")
+	mustJoin(t, h, tok(3), room.ID, "Cy")
+	for i := 1; i <= 3; i++ {
+		drain(cns[i])
+	}
+	return h, clk, room.ID, cns
+}
+
+func notesIn(evs []event) []event {
+	var out []event
+	for _, e := range evs {
+		if e.name == "note" {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+func TestNoteDeliveredToRecipientOnly(t *testing.T) {
+	h, _, rid, cns := noteSetup(t)
+	id, err := h.SendNote(tok(1), rid, memberID(tok(2)), "hello")
+	if err != nil || len(id) != 16 {
+		t.Fatalf("id %q err %v", id, err)
+	}
+	got := notesIn(drain(cns[2]))
+	if len(got) != 1 {
+		t.Fatalf("recipient got %d notes", len(got))
+	}
+	d := got[0].data
+	if d["id"] != id || d["roomId"] != rid || d["fromId"] != memberID(tok(1)) ||
+		d["fromName"] != "Ada" || d["text"] != "hello" || d["sentAt"] != float64(h.nowMs()) {
+		t.Fatalf("note data: %v", d)
+	}
+	if len(notesIn(drain(cns[1]))) != 0 || len(notesIn(drain(cns[3]))) != 0 {
+		t.Fatal("note leaked to someone else")
+	}
+	// A guest can send to the host too.
+	if _, err := h.SendNote(tok(2), rid, memberID(tok(1)), "hi"); err != nil {
+		t.Fatal(err)
+	}
+	if len(notesIn(drain(cns[1]))) != 1 {
+		t.Fatal("host did not get the note")
+	}
+}
+
+func TestNoteErrors(t *testing.T) {
+	h, _, rid, _ := noteSetup(t)
+	outsider := tok(9)
+	_, err := h.SendNote(outsider, rid, memberID(tok(2)), "x")
+	wantStatus(t, err, 403)
+	_, err = h.SendNote(tok(1), "nope", memberID(tok(2)), "x")
+	wantStatus(t, err, 404)
+	_, err = h.SendNote(tok(1), rid, memberID(tok(9)), "x") // not in room
+	wantStatus(t, err, 404)
+	_, err = h.SendNote(tok(1), rid, "nobody", "x")
+	wantStatus(t, err, 404)
+	_, err = h.SendNote(tok(1), rid, memberID(tok(1)), "x")
+	wantStatus(t, err, 400)
+}
+
+func TestNoteRateLimit(t *testing.T) {
+	h, clk, rid, _ := noteSetup(t)
+	to := memberID(tok(2))
+	for i := 0; i < 5; i++ {
+		if _, err := h.SendNote(tok(1), rid, to, "n"); err != nil {
+			t.Fatal(err)
+		}
+		clk.Advance(5 * time.Second)
+	}
+	_, err := h.SendNote(tok(1), rid, to, "n") // 25s after the first
+	wantStatus(t, err, 429)
+	// Another sender is unaffected.
+	if _, err := h.SendNote(tok(3), rid, to, "n"); err != nil {
+		t.Fatal(err)
+	}
+	clk.Advance(36 * time.Second) // 61s after the first note, 36s after the second
+	if _, err := h.SendNote(tok(1), rid, to, "n"); err != nil {
+		t.Fatalf("after window: %v", err)
+	}
+	_, err = h.SendNote(tok(1), rid, to, "n") // second is still inside the window
+	wantStatus(t, err, 429)
+}
+
+func TestNoteQueuedWhileDisconnectedAndDeliveredOnce(t *testing.T) {
+	h, _, rid, cns := noteSetup(t)
+	h.Detach(cns[2])
+	for i := 0; i < 3; i++ {
+		if _, err := h.SendNote(tok(1), rid, memberID(tok(2)), fmt.Sprintf("m%d", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cn, err := h.Connect(tok(2), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	evs := drain(cn)
+	notes := notesIn(evs)
+	if len(notes) != 3 || notes[0].data["text"] != "m0" || notes[2].data["text"] != "m2" {
+		t.Fatalf("queued notes: %v", notes)
+	}
+	if evs[0].name != "rooms" || evs[1].name != "room" {
+		t.Fatalf("notes must follow the state events: %v", evs[0].name)
+	}
+	h.Detach(cn)
+	cn, _ = h.Connect(tok(2), "")
+	if len(notesIn(drain(cn))) != 0 {
+		t.Fatal("note delivered twice")
+	}
+}
+
+func TestNoteQueueKeepsNewest20(t *testing.T) {
+	h, clk, rid, cns := noteSetup(t)
+	h.Detach(cns[2])
+	for i := 0; i < 25; i++ {
+		if i%5 == 0 {
+			clk.Advance(time.Minute)
+		}
+		if _, err := h.SendNote(tok(1), rid, memberID(tok(2)), fmt.Sprintf("m%d", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cn, _ := h.Connect(tok(2), "")
+	notes := notesIn(drain(cn))
+	if len(notes) != 20 || notes[0].data["text"] != "m5" || notes[19].data["text"] != "m24" {
+		t.Fatalf("got %d notes, first %v", len(notes), notes[0].data["text"])
+	}
+}
+
+func TestNoteQueueDroppedWhenRecipientLeaves(t *testing.T) {
+	h, _, rid, cns := noteSetup(t)
+	h.Detach(cns[2])
+	if _, err := h.SendNote(tok(1), rid, memberID(tok(2)), "bye"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Leave(tok(2), rid); err != nil {
+		t.Fatal(err)
+	}
+	cn, _ := h.Connect(tok(2), "")
+	if len(notesIn(drain(cn))) != 0 {
+		t.Fatal("note survived leaving")
+	}
+	// A member who has left cannot receive new notes.
+	_, err := h.SendNote(tok(1), rid, memberID(tok(2)), "x")
+	wantStatus(t, err, 404)
+}
+
+func TestNoteQueueDroppedWhenRoomRemoved(t *testing.T) {
+	h, clk, rid, cns := noteSetup(t)
+	h.Detach(cns[2])
+	if _, err := h.SendNote(tok(1), rid, memberID(tok(2)), "x"); err != nil {
+		t.Fatal(err)
+	}
+	clk.Advance(time.Hour) // finished? timer is paused at 0, so patch it to done
+	h.mu.Lock()
+	h.rooms[rid].timer.ElapsedMs = h.rooms[rid].timer.total()
+	h.rooms[rid].setAt = h.now().Add(-time.Hour)
+	h.mu.Unlock()
+	h.Sweep()
+	if _, ok := h.room(rid); ok {
+		t.Fatal("room should be gone")
+	}
+	cn, _ := h.Connect(tok(2), "")
+	if len(notesIn(drain(cn))) != 0 {
+		t.Fatal("note survived room removal")
+	}
+}

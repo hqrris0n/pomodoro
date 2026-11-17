@@ -22,6 +22,9 @@ const (
 	rateLimit         = 20
 	streamBufferSize  = 16
 	roomIDRandomBytes = 4
+	noteRateLimit     = 5
+	noteRateWindow    = 60 * time.Second
+	maxQueuedNotes    = 20
 )
 
 type apiError struct {
@@ -41,6 +44,7 @@ var (
 	errRoomFull    = &apiError{429, "room is full"}
 	errRateLimited = &apiError{429, "too many requests"}
 	errBusy        = &apiError{429, "server is busy"}
+	errNoteRate    = &apiError{429, "too many sticky notes, wait a minute"}
 )
 
 // hub owns all state behind one mutex. Every exported method locks it, mutates,
@@ -83,6 +87,8 @@ type client struct {
 	conn       *conn
 	detachedAt time.Time // when the stream was last absent (zero while connected)
 	cmds       []time.Time
+	noteTimes  []time.Time // sticky notes this token sent within noteRateWindow
+	notes      [][]byte    // note frames waiting for a stream, oldest first
 }
 
 // conn is one SSE connection. The hub sends frames on ch; done is closed when
@@ -133,6 +139,14 @@ func (c *client) pruneCmds(now time.Time) {
 		i++
 	}
 	c.cmds = c.cmds[i:]
+}
+
+func (c *client) pruneNotes(now time.Time) {
+	i := 0
+	for i < len(c.noteTimes) && now.Sub(c.noteTimes[i]) >= noteRateWindow {
+		i++
+	}
+	c.noteTimes = c.noteTimes[i:]
 }
 
 // Allow records one command for the token and reports errRateLimited when the
@@ -279,12 +293,16 @@ func (h *hub) Connect(token, name string) (*conn, error) {
 	if name != "" {
 		c.name = name
 	}
-	cn := &conn{token: token, ch: make(chan []byte, streamBufferSize), done: make(chan struct{})}
+	cn := &conn{token: token, ch: make(chan []byte, streamBufferSize+len(c.notes)), done: make(chan struct{})}
 	c.conn = cn
 	c.detachedAt = time.Time{}
 	h.streams++
 	cn.ch <- h.roomsFrame(h.summaries())
 	cn.ch <- h.roomFrame(c)
+	for _, f := range c.notes { // channel has room for all of them
+		cn.ch <- f
+	}
+	c.notes = nil
 	return cn, nil
 }
 
@@ -331,6 +349,7 @@ func (h *hub) touchAll(r *room) {
 func (h *hub) leaveLocked(c *client) {
 	r := h.rooms[c.roomID]
 	c.roomID = ""
+	c.notes = nil
 	if r == nil {
 		return
 	}
@@ -539,6 +558,61 @@ func (h *hub) SetRole(token, roomID, targetID, role string) (Room, error) {
 	return Room{}, errNoMember
 }
 
+// SendNote relays a sticky note from the caller to another member of the same
+// room and returns the note id. text must already be validated. A recipient
+// with a live stream gets it at once; otherwise it is queued (newest 20) until
+// their stream connects. Membership and recipient are checked before the
+// per-sender rate limit, which only counts notes that were accepted.
+func (h *hub) SendNote(token, roomID, toID, text string) (string, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	c, err := h.clientLocked(token)
+	if err != nil {
+		return "", err
+	}
+	r, me, err := h.memberOf(c, roomID)
+	if err != nil {
+		return "", err
+	}
+	if toID == me.c.id {
+		return "", badRequest("you cannot send a note to yourself")
+	}
+	var to *member
+	for _, m := range r.members {
+		if m.c.id == toID {
+			to = m
+		}
+	}
+	if to == nil {
+		return "", errNoMember
+	}
+	now := h.now()
+	c.pruneNotes(now)
+	if len(c.noteTimes) >= noteRateLimit {
+		return "", errNoteRate
+	}
+	c.noteTimes = append(c.noteTimes, now)
+
+	b := make([]byte, 8)
+	_, _ = rand.Read(b)
+	id := hex.EncodeToString(b)
+	f := frame("note", Note{ID: id, RoomID: r.id, FromID: c.id, FromName: me.name, Text: text, SentAt: now.UnixMilli()})
+	rc := to.c
+	if rc.conn != nil {
+		select {
+		case rc.conn.ch <- f:
+			return id, nil
+		default:
+			h.dropLocked(rc) // full buffer: reconnect will deliver the note
+		}
+	}
+	rc.notes = append(rc.notes, f)
+	if len(rc.notes) > maxQueuedNotes {
+		rc.notes = rc.notes[len(rc.notes)-maxQueuedNotes:]
+	}
+	return id, nil
+}
+
 // Rename changes the caller's display name, in their room if they are in one.
 func (h *hub) Rename(token, name string) error {
 	h.mu.Lock()
@@ -586,6 +660,7 @@ func (h *hub) Sweep() {
 		if at, ok := h.finishedAt(r); ok && now.Sub(at) >= finishedRoomTTL {
 			for _, m := range r.members {
 				m.c.roomID = ""
+				m.c.notes = nil
 				h.dirty[m.c] = struct{}{}
 			}
 			delete(h.rooms, id)
@@ -599,7 +674,8 @@ func (h *hub) Sweep() {
 	}
 	for token, c := range h.clients {
 		c.pruneCmds(now)
-		if c.conn == nil && c.roomID == "" && len(c.cmds) == 0 {
+		c.pruneNotes(now)
+		if c.conn == nil && c.roomID == "" && len(c.cmds) == 0 && len(c.noteTimes) == 0 {
 			delete(h.clients, token)
 		}
 	}

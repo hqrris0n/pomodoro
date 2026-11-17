@@ -350,3 +350,79 @@ func TestEndToEndStream(t *testing.T) {
 		t.Fatal("token in response")
 	}
 }
+
+func TestNotesOverHTTP(t *testing.T) {
+	e := newEnv(t)
+	_, body := e.do(t, "POST", "/api/rooms", tok(1), createBody(nil))
+	var room Room
+	_ = json.Unmarshal([]byte(body), &room)
+	e.do(t, "POST", "/api/rooms/"+room.ID+"/join", tok(2), map[string]any{"name": "Bo"})
+	path := "/api/rooms/" + room.ID + "/notes"
+	to := memberID(tok(2))
+	send := func(token, to, text string) int {
+		status, _ := e.do(t, "POST", path, token, map[string]any{"to": to, "text": text})
+		return status
+	}
+
+	resp, err := http.Get(e.srv.URL + "/api/events?token=" + tok(2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	br := bufio.NewReader(resp.Body)
+	readEvent(t, br) // rooms
+	readEvent(t, br) // room
+
+	status, out := e.do(t, "POST", path, tok(1), map[string]any{"to": to, "text": "  hi there  "})
+	var ok map[string]string
+	_ = json.Unmarshal([]byte(out), &ok)
+	if status != 202 || len(ok["id"]) != 16 {
+		t.Fatalf("send: %d %s", status, out)
+	}
+	name, data := readEvent(t, br)
+	if name != "note" || data["text"] != "hi there" || data["fromName"] != "Ada" || data["id"] != ok["id"] {
+		t.Fatalf("event: %s %v", name, data)
+	}
+
+	if s := send(tok(9), to, "x"); s != 403 {
+		t.Fatalf("non-member sender: %d", s)
+	}
+	if s := send(tok(1), memberID(tok(9)), "x"); s != 404 {
+		t.Fatalf("non-member recipient: %d", s)
+	}
+	if s := send(tok(1), memberID(tok(1)), "x"); s != 400 {
+		t.Fatalf("self: %d", s)
+	}
+	if s, _ := e.do(t, "POST", "/api/rooms/nope/notes", tok(1), map[string]any{"to": to, "text": "x"}); s != 404 {
+		t.Fatalf("no room: %d", s)
+	}
+	for _, text := range []string{"", "   ", strings.Repeat("a", 141), strings.Repeat("é", 141), "bad\x07bell", "tab\there"} {
+		if s := send(tok(1), to, text); s != 400 {
+			t.Fatalf("text %q: %d", text, s)
+		}
+	}
+	if s, _ := e.do(t, "POST", path, tok(1), `{"to":"`+to+`","text":"x","extra":1}`); s != 400 {
+		t.Fatalf("unknown field: %d", s)
+	}
+	if s := send(tok(1), to, strings.Repeat("é", 140)); s != 202 {
+		t.Fatalf("140 multibyte runes: %d", s)
+	}
+	if s := send(tok(1), to, "line one\nline two"); s != 202 {
+		t.Fatalf("newline: %d", s)
+	}
+
+	// 2 notes sent above plus the first one make 3; two more fit, the next does not.
+	for i := 0; i < 2; i++ {
+		if s := send(tok(1), to, "n"); s != 202 {
+			t.Fatalf("note %d: %d", i, s)
+		}
+	}
+	status, out = e.do(t, "POST", path, tok(1), map[string]any{"to": to, "text": "n"})
+	if status != 429 || !strings.Contains(out, "error") {
+		t.Fatalf("6th note: %d %s", status, out)
+	}
+	e.clk.Advance(61 * time.Second)
+	if s := send(tok(1), to, "n"); s != 202 {
+		t.Fatalf("after window: %d", s)
+	}
+}

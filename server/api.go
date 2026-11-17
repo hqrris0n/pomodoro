@@ -24,6 +24,7 @@ func newAPI(h *hub) http.Handler {
 	mux.HandleFunc("POST /api/rooms/{id}/leave", a.command(a.leave))
 	mux.HandleFunc("PATCH /api/rooms/{id}", a.command(a.patch))
 	mux.HandleFunc("POST /api/rooms/{id}/role", a.command(a.setRole))
+	mux.HandleFunc("POST /api/rooms/{id}/notes", a.command(a.note))
 	mux.HandleFunc("PUT /api/me", a.command(a.rename))
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, 404, map[string]string{"error": "not found"})
@@ -212,6 +213,26 @@ func (a *api) setRole(w http.ResponseWriter, r *http.Request, token string) erro
 		return err
 	}
 	writeJSON(w, 200, room)
+	return nil
+}
+
+func (a *api) note(w http.ResponseWriter, r *http.Request, token string) error {
+	var in struct {
+		To   string `json:"to"`
+		Text string `json:"text"`
+	}
+	if err := decode(r, &in); err != nil {
+		return err
+	}
+	text, err := validateNoteText(in.Text)
+	if err != nil {
+		return err
+	}
+	id, err := a.h.SendNote(token, r.PathValue("id"), in.To, text)
+	if err != nil {
+		return err
+	}
+	writeJSON(w, 202, map[string]string{"id": id})
 	return nil
 }
 
