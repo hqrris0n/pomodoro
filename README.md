@@ -1,4 +1,4 @@
-# Café Pomodoro
+# Pomo Café
 
 A pomodoro timer dressed as a small pixel-art café. You place an order (how
 long, how many rounds, which drink), and while you work a crew of baristas

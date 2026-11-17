@@ -23,7 +23,7 @@
 <header class="topbar">
   <div class="brand">
     <IconCup />
-    <span class="wordmark">Café timer</span>
+    <span class="wordmark">Pomo Café</span>
   </div>
   <div class="actions">
     {@render clocks?.()}

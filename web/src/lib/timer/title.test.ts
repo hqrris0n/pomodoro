@@ -8,7 +8,7 @@ const s: TimerState = { focusMs: 25 * MIN, breakMs: 5 * MIN, rounds: 2, elapsedM
 
 describe('titleFor', () => {
   it('describes each state', () => {
-    expect(titleFor(null)).toBe('Café timer');
+    expect(titleFor(null)).toBe('Pomo Café');
     expect(titleFor(snapshot(s, 1000))).toBe('24:59 · Focus');
     expect(titleFor(snapshot(s, 25 * MIN + 1000))).toBe('04:59 · Break');
     expect(titleFor(snapshot({ ...s, anchorAt: null, elapsedMs: 1000 }, 99))).toBe(

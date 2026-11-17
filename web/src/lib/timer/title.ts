@@ -2,7 +2,7 @@ import type { TimerEngine } from './engine.svelte';
 import { formatClock, type TimerView } from './schedule';
 
 export function titleFor(view: TimerView | null): string {
-  if (!view) return 'Café timer';
+  if (!view) return 'Pomo Café';
   if (view.phase === 'done') return 'Your drink is ready';
   const clock = formatClock(view.phaseRemainingMs);
   if (!view.running) return `Paused · ${clock}`;

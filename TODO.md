@@ -1,13 +1,20 @@
 # To do
-
-Everything on the original list is built. What is left needs a person:
-
-- [ ] Listen through the ten sound loops once (they were checked by
-      measurement only). Chatter, dishes and street are the ones most likely
-      to contain something distracting; fireplace repeats every 25 seconds.
-      Swap any of them with `web/scripts/make-loop.sh`.
-- [ ] Try it on a real iPhone: sound starting after the first tap, the
-      per-channel volume sliders, dragging to-dos by touch, and notifications.
-- [ ] Deploy: build the image on the NAS, attach it to the proxy network and
-      copy `deploy/Caddyfile.example` (with the real hostname) into the Caddy
-      config folder.
+- [ ] On-off toggles for each music
+- [ ] Make the to-do list collapsable
+- [ ] Center the timer and drinks with the page
+- [ ] Move the to-do list to the left under the title
+- [ ] Add a skip break
+- [ ] Add a satisfying pop sound when we click "clear completed"
+- [ ] keep the scaling of the floor and cup the same even when the drink is done
+- [ ] At the corner of each mix, show a little picture icon to allow the user to pick what background that sound should start playing for; one sound per background max; the user can still pick other sounds after they pick the background so its only tied to the initial change in background
+- [ ] Host, co-host and guest roles; the host can demote co-hosts back to guest ("Promote" / "Demote")
+- [ ] Guests keep their own volume and Sound switch
+- [ ] Clock toggle in the top bar, 12/24-hour setting, timer shown smaller under the time
+- [ ] Bigger timer digits (up to 240px)
+- [ ] User profiles saved on the server (username, display name, "Order for" card, delete user)
+- [ ] Let each user edit the preset mixes
+- [x] Rename "Café timer" to "Pomo Café"
+- [ ] Page-turn sound when the to-do list opens or closes
+- [ ] Sticky notes to people in the same room
+- [ ] Fix: the timer starts by itself after clicking Leave
+- [ ] Make the disabled Pause button for guests clearly disabled
