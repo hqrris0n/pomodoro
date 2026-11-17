@@ -23,3 +23,18 @@ Licences were read from each file's own Commons page. Every loop was processed w
 `web/public/sounds/chime.mp3` is not a download. It was generated with ffmpeg (`aevalsrc`):
 two sine notes (660 Hz, then 880 Hz from 0.3 s) with a 5 ms attack and exponential decay,
 1.8 s long, peak about -6 dBFS. It is original work with no licence restrictions.
+
+## Effects
+
+`web/public/sounds/pop.mp3` is not a download. It was generated with ffmpeg (`aevalsrc`):
+a sine whose pitch sweeps exponentially down from 900 Hz to 250 Hz (25 ms time constant),
+a 3 ms attack and exponential decay (25 ms time constant), plus a tiny 2 ms noise click at
+the start and a 10 ms fade to silence at the end. 110 ms long, mono, 32 kHz, peak about
+-6 dBFS. It is original work with no licence restrictions.
+
+`web/public/sounds/page.mp3` is a single page turn cut from the same recording as the
+"pages" loop: "Leafing through pages, flicking pages, shutting book" by cori,
+https://commons.wikimedia.org/wiki/File:Old_book.ogg , public domain (PD-author,
+https://commons.wikimedia.org/wiki/Template:PD-author). Changes: 0.6 s taken from 1:02.70
+(one isolated flip, quiet before and after), 150 Hz high-pass, 8 ms fade in, 60 ms fade out,
+mono, 32 kHz, gain to a peak of about -6 dBFS, re-encoded as 64 kbps MP3.
