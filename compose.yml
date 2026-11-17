@@ -1,0 +1,29 @@
+# Runs the cafe timer as one small container. Put it on the same Docker
+# network as your reverse proxy and point the proxy at cafe:8080
+# (see deploy/Caddyfile.example).
+services:
+  cafe:
+    build:
+      context: .
+      platforms: [linux/amd64]
+    image: cafe-timer
+    container_name: cafe
+    restart: unless-stopped
+    read_only: true
+    mem_limit: 48m
+    cap_drop: [ALL]
+    security_opt: ['no-new-privileges:true']
+    # Without a shared proxy network, publish the port on the host instead:
+    # ports: ['127.0.0.1:8090:8080']
+    #
+    # To edit the drink menu or swap sounds without rebuilding the image,
+    # mount your own folders over the built-in ones:
+    # volumes:
+    #   - ./web/public/drinks:/public/drinks:ro
+    #   - ./web/public/sounds:/public/sounds:ro
+    networks: [proxy]
+
+networks:
+  # The network your reverse proxy container is attached to.
+  proxy:
+    external: true

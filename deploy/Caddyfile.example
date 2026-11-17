@@ -1,0 +1,11 @@
+# Copy into your Caddy site-config folder as its own .conf file and replace
+# the hostname. Caddy must share a Docker network with the "cafe" container.
+timer.example.com {
+	encode zstd gzip
+
+	reverse_proxy cafe:8080 {
+		# The list of timers is a long-lived event stream; send each event
+		# as soon as it is written instead of buffering it.
+		flush_interval -1
+	}
+}
