@@ -170,7 +170,7 @@ func TestPermissionStatuses(t *testing.T) {
 
 	patch := map[string]any{"timer": createBody(nil)["timer"]}
 	if status, _ := e.do(t, "PATCH", "/api/rooms/"+room.ID, tok(2), patch); status != 403 {
-		t.Fatalf("visitor patch: %d", status)
+		t.Fatalf("guest patch: %d", status)
 	}
 	if status, _ := e.do(t, "PATCH", "/api/rooms/nope", tok(1), patch); status != 404 {
 		t.Fatalf("missing room: %d", status)
@@ -179,7 +179,24 @@ func TestPermissionStatuses(t *testing.T) {
 		t.Fatalf("non-member patch: %d", status)
 	}
 	if status, _ := e.do(t, "PATCH", "/api/rooms/"+room.ID, tok(1), patch); status != 200 {
-		t.Fatalf("owner patch: %d", status)
+		t.Fatalf("host patch: %d", status)
+	}
+
+	role := func(caller string, role string) int {
+		status, _ := e.do(t, "POST", "/api/rooms/"+room.ID+"/role", caller, map[string]any{"memberId": memberID(tok(2)), "role": role})
+		return status
+	}
+	if status := role(tok(2), "cohost"); status != 403 {
+		t.Fatalf("guest role: %d", status)
+	}
+	if status := role(tok(1), "cohost"); status != 200 {
+		t.Fatalf("host role: %d", status)
+	}
+	if status, _ := e.do(t, "PATCH", "/api/rooms/"+room.ID, tok(2), patch); status != 200 {
+		t.Fatalf("cohost patch: %d", status)
+	}
+	if status := role(tok(2), "guest"); status != 403 {
+		t.Fatalf("cohost role: %d", status)
 	}
 }
 

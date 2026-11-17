@@ -8,7 +8,7 @@ import { timer } from '../timer/engine.svelte';
 import { elapsedAt, snapshot } from '../timer/schedule';
 import type { Mix, Settings, TimerState } from '../types';
 import * as realApi from './api';
-import { ApiError, type Room, type RoomSummary, type RoomsApi } from './api';
+import { ApiError, type Role, type Room, type RoomSummary, type RoomsApi } from './api';
 
 const SNAPSHOT_KEY = 'ownSettings';
 const DEBOUNCE_MS = 300;
@@ -75,21 +75,23 @@ export class RoomsStore {
   online = $state(false);
   room = $state.raw<Room | null>(null);
   me = $state<string | null>(null);
-  role = $state<'owner' | 'visitor' | null>(null);
+  role = $state<Role | null>(null);
   error = $state<string | null>(null);
   /** Server clock minus local clock, ms; the same value given to the timer engine. */
   clockOffset = $state(0);
-  /** True while I am in someone else's room (as visitor or promoted co-owner). */
+  /** True while I am in someone else's room (as guest or co-host). */
   joined = $state(false);
   #all = $state.raw<RoomSummary[]>([]);
 
   list = $derived(this.#all.filter((r) => r.id !== this.room?.id));
-  locked = $derived(this.role === 'visitor');
-  ownerName = $derived(
-    this.role === 'visitor'
-      ? (this.room?.members.find((m) => m.role === 'owner')?.name ?? null)
+  locked = $derived(this.role === 'guest');
+  hostName = $derived(
+    this.role === 'guest'
+      ? (this.room?.members.find((m) => m.role === 'host')?.name ?? null)
       : null,
   );
+  /** Host and co-hosts drive the timer and settings; guests only follow. */
+  #controls = $derived(this.role === 'host' || this.role === 'cohost');
 
   #d: RoomsDeps;
   #es: EventSource | null = null;
@@ -214,8 +216,8 @@ export class RoomsStore {
 
   // ---- remote -> local ------------------------------------------------
 
-  #roleIn(room: Room): 'owner' | 'visitor' {
-    return room.members.find((m) => m.id === this.me)?.role ?? 'visitor';
+  #roleIn(room: Room): Role {
+    return room.members.find((m) => m.id === this.me)?.role ?? 'guest';
   }
 
   #onRoomEvent(room: Room | null) {
@@ -234,11 +236,11 @@ export class RoomsStore {
   }
 
   /** Make `room` the current room and mirror it locally without sending anything. */
-  #adopt(room: Room, role: 'owner' | 'visitor') {
+  #adopt(room: Room, role: Role) {
     const d = this.#d;
     this.room = room;
     this.role = role;
-    if (role === 'visitor' && !load<OwnSettings | null>(SNAPSHOT_KEY, null)) {
+    if (role === 'guest' && !load<OwnSettings | null>(SNAPSHOT_KEY, null)) {
       this.#saveOwn();
     }
     this.joined = load<OwnSettings | null>(SNAPSHOT_KEY, null) !== null;
@@ -255,14 +257,14 @@ export class RoomsStore {
   }
 
   #drivesRotation(room: Room): boolean {
-    const first = room.members.find((m) => m.role === 'owner');
+    const first = room.members.find((m) => m.role === 'host');
     return first !== undefined && first.id === this.me;
   }
 
   /** Settings as the room should see them from this client. */
   #effective(): Settings {
     const s = currentSettings(this.#d);
-    if (this.role === 'owner' && this.room && !this.#drivesRotation(this.room)) {
+    if (this.#controls && this.room && !this.#drivesRotation(this.room)) {
       s.backgroundRotateMin = this.room.settings.backgroundRotateMin;
     }
     return s;
@@ -301,7 +303,7 @@ export class RoomsStore {
     return (
       this.online &&
       this.#d.identity.visible &&
-      this.role !== 'visitor' &&
+      this.role !== 'guest' &&
       !this.room &&
       !this.#creating &&
       state !== null &&
@@ -311,7 +313,7 @@ export class RoomsStore {
 
   #onTimerChange(state: TimerState | null) {
     const d = this.#d;
-    if (this.role === 'visitor') return;
+    if (this.role === 'guest') return;
     if (state === null) {
       const room = this.room;
       if (room) {
@@ -322,7 +324,7 @@ export class RoomsStore {
       }
       return;
     }
-    if (this.room && this.role === 'owner') {
+    if (this.room && this.#controls) {
       const id = this.room.id;
       d.api.patchRoom(d.identity.token, id, { timer: state }).catch(() => {});
     } else if (!this.room && this.#canPublish()) {
@@ -348,7 +350,7 @@ export class RoomsStore {
         settings,
         timer,
       });
-      if (d.timer.state === null || this.role === 'visitor' || this.room) {
+      if (d.timer.state === null || this.role === 'guest' || this.room) {
         // Stopped or joined elsewhere while the request was in flight.
         if (!this.room || this.room.id !== room.id) {
           d.api.leaveRoom(d.identity.token, room.id).catch(() => {});
@@ -356,7 +358,7 @@ export class RoomsStore {
         return;
       }
       this.room = room;
-      this.role = 'owner';
+      this.role = 'host';
       this.#synced = sig(settings);
     } catch {
       // solo timer keeps working
@@ -366,13 +368,13 @@ export class RoomsStore {
   }
 
   #onSettingsChanged(signature: string) {
-    if (this.role !== 'owner' || !this.room) return;
+    if (!this.#controls || !this.room) return;
     if (signature === this.#synced) return;
     if (this.#debounce) clearTimeout(this.#debounce);
     this.#debounce = setTimeout(() => {
       this.#debounce = null;
       const room = this.room;
-      if (this.role !== 'owner' || !room) return;
+      if (!this.#controls || !room) return;
       const settings = this.#effective();
       const s = sig(settings);
       if (s === this.#synced) return;
@@ -384,7 +386,7 @@ export class RoomsStore {
   #onVisible(visible: boolean) {
     const d = this.#d;
     if (!visible) {
-      if (this.role === 'owner' && this.room && this.room.members.length <= 1) {
+      if (this.#controls && this.room && this.room.members.length <= 1) {
         const id = this.room.id;
         this.room = null;
         this.role = null;
@@ -411,14 +413,14 @@ export class RoomsStore {
   async join(roomId: string): Promise<void> {
     const d = this.#d;
     const hadSnapshot = load<OwnSettings | null>(SNAPSHOT_KEY, null) !== null;
-    if (this.role !== 'visitor' && !hadSnapshot) this.#saveOwn();
+    if (this.role !== 'guest' && !hadSnapshot) this.#saveOwn();
     this.#joining = true;
     try {
       const room = await d.api.joinRoom(d.identity.token, roomId, { name: d.identity.name });
       this.error = null;
       this.#adopt(room, this.#roleIn(room));
     } catch (e) {
-      if (this.role !== 'visitor' && !hadSnapshot) save<OwnSettings | null>(SNAPSHOT_KEY, null);
+      if (this.role !== 'guest' && !hadSnapshot) save<OwnSettings | null>(SNAPSHOT_KEY, null);
       this.#fail(e, 'join');
     } finally {
       this.#joining = false;
@@ -436,17 +438,18 @@ export class RoomsStore {
       }
       this.error = null;
       this.#restoreOwn();
-    } else if (this.role === 'owner') {
+    } else if (this.#controls) {
       d.timer.stop();
     }
   }
 
-  async promote(memberId: string): Promise<void> {
+  /** Host only: make another member a co-host or a guest. */
+  async setRole(memberId: string, role: 'cohost' | 'guest'): Promise<void> {
     const d = this.#d;
     const room = this.room;
-    if (this.role !== 'owner' || !room) return;
+    if (this.role !== 'host' || !room) return;
     try {
-      const next = await d.api.promote(d.identity.token, room.id, memberId);
+      const next = await d.api.setRole(d.identity.token, room.id, memberId, role);
       this.error = null;
       if (this.room?.id === next.id) this.room = next;
     } catch (e) {

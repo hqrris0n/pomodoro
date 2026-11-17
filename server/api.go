@@ -23,7 +23,7 @@ func newAPI(h *hub) http.Handler {
 	mux.HandleFunc("POST /api/rooms/{id}/join", a.command(a.join))
 	mux.HandleFunc("POST /api/rooms/{id}/leave", a.command(a.leave))
 	mux.HandleFunc("PATCH /api/rooms/{id}", a.command(a.patch))
-	mux.HandleFunc("POST /api/rooms/{id}/promote", a.command(a.promote))
+	mux.HandleFunc("POST /api/rooms/{id}/role", a.command(a.setRole))
 	mux.HandleFunc("PUT /api/me", a.command(a.rename))
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, 404, map[string]string{"error": "not found"})
@@ -199,14 +199,15 @@ func (a *api) patch(w http.ResponseWriter, r *http.Request, token string) error 
 	return nil
 }
 
-func (a *api) promote(w http.ResponseWriter, r *http.Request, token string) error {
+func (a *api) setRole(w http.ResponseWriter, r *http.Request, token string) error {
 	var in struct {
 		MemberID string `json:"memberId"`
+		Role     string `json:"role"`
 	}
 	if err := decode(r, &in); err != nil {
 		return err
 	}
-	room, err := a.h.Promote(token, r.PathValue("id"), in.MemberID)
+	room, err := a.h.SetRole(token, r.PathValue("id"), in.MemberID, in.Role)
 	if err != nil {
 		return err
 	}

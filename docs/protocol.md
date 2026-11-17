@@ -46,12 +46,17 @@ type Settings = {
   backgroundRotateMin: number;     // 0 = off, else 1 .. 120
   mix: Record<string, number>;     // channel id -> volume 0..1, <= 16 keys
 };
-type Member = { id: string; name: string; role: 'owner' | 'visitor'; joinedAt: number };
+type Member = { id: string; name: string; role: 'host' | 'cohost' | 'guest'; joinedAt: number };
 type Room = { id: string; settings: Settings; timer: TimerState; members: Member[] };
 type RoomSummary = {
   id: string; ownerName: string; memberCount: number; drinkId: string; timer: TimerState;
 };
 ```
+
+Roles: the **host** is whoever started the timer, a **co-host** can control
+the timer and settings like the host, and a **guest** is read-only. A room has
+exactly one host at all times. Only the host changes other members between
+co-host and guest. New joiners are guests.
 
 A client is in at most one room. Master volume, mute and todos are never sent.
 A client whose "show my timer to others" setting is off does not create a
@@ -62,15 +67,15 @@ room at all.
 | Method and path               | Who     | Body                              | Effect |
 | ----------------------------- | ------- | --------------------------------- | ------ |
 | `GET /events?token=&name=`    | anyone  | —                                 | SSE stream, see below |
-| `POST /rooms`                 | anyone  | `{name, settings, timer}`         | Leaves any current room, creates a room with the caller as owner. Returns `Room`. |
-| `POST /rooms/{id}/join`       | anyone  | `{name}`                          | Leaves any current room, joins as visitor. Returns `Room`. |
+| `POST /rooms`                 | anyone  | `{name, settings, timer}`         | Leaves any current room, creates a room with the caller as host. Returns `Room`. |
+| `POST /rooms/{id}/join`       | anyone  | `{name}`                          | Leaves any current room, joins as guest. Returns `Room`. |
 | `POST /rooms/{id}/leave`      | member  | —                                 | Leaves. |
-| `PATCH /rooms/{id}`           | owner   | `{settings?, timer?}`             | Replaces the given parts. |
-| `POST /rooms/{id}/promote`    | owner   | `{memberId}`                      | Makes that visitor an owner (co-owner; the caller stays owner). |
+| `PATCH /rooms/{id}`           | host, co-host | `{settings?, timer?}`             | Replaces the given parts. |
+| `POST /rooms/{id}/role`       | host    | `{memberId, role}`                | Sets that member's role to `"cohost"` or `"guest"`. The host's own role cannot change (400); an unknown member is 404. |
 | `PUT /me`                     | anyone  | `{name}`                          | Renames the caller in their room. |
 | `GET /health`                 | anyone  | —                                 | `200 ok` |
 
-Responses: `POST /rooms`, `join`, `PATCH` and `promote` return the `Room`;
+Responses: `POST /rooms`, `join`, `PATCH` and `role` return the `Room`;
 `leave` and `PUT /me` return `{}`. `name` in a body is optional and falls back
 to the name given on the stream. `PUT /me` while in no room is a 403 (the name
 is sent again with the next create or join). Joining the room you are already
@@ -78,7 +83,7 @@ in returns it unchanged.
 
 `timer.anchorAt` sent by a client is treated as a boolean: non-null means
 "running", and the server replaces it with its own `now`. Errors are
-`{error: string}` with 400 (invalid), 403 (not an owner / not a member),
+`{error: string}` with 400 (invalid), 403 (not a host or co-host / not the host for `role` / not a member),
 404 (no such room), 429 (limits).
 
 ## SSE events
@@ -95,8 +100,9 @@ in returns it unchanged.
 
 1. A member is present while their SSE stream is open. When it closes they
    have a 30s grace period to reconnect, then they are removed.
-2. When the last owner leaves or is removed, the remaining member with the
-   earliest `joinedAt` becomes owner. The timer is untouched.
+2. When the host leaves or is removed, the co-host with the earliest
+   `joinedAt` becomes host; if there is no co-host, the guest with the earliest
+   `joinedAt`. The timer is untouched.
 3. A room with no members is deleted.
 4. A room whose timer has been done for 10 minutes is deleted; its members
    receive `room: null`.
@@ -105,12 +111,12 @@ in returns it unchanged.
 
 ## Client behaviour
 
-- Owner: local engine is the source of truth; every local change to timer or
+- Host and co-host: local engine is the source of truth; every local change to timer or
   settings is sent with `PATCH`.
-- Visitor: local engine and settings are overwritten by each `room` event and
+- Guest: local engine and settings are overwritten by each `room` event and
   all controls for timer, drink, background and mix are disabled. On leaving,
-  the visitor's own saved drink, background and mix are restored.
-- When the timer is done: an owner choosing "Same again" patches a fresh timer
+  the guest's own saved drink, background and mix are restored.
+- When the timer is done: a host or co-host choosing "Same again" patches a fresh timer
   for everyone still present; anyone choosing "Another round" leaves the room
   and returns to setup.
 - If the server is unreachable the app behaves as a solo timer and retries

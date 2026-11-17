@@ -45,9 +45,9 @@
         },
         timer: t(0, true),
         members: [
-          { id: 'me', name: 'Vanilla Hare', role: 'owner', joinedAt: 1 },
-          { id: 'v1', name: 'Maple Wren', role: 'visitor', joinedAt: 2 },
-          { id: 'v2', name: 'Cocoa Badger', role: 'owner', joinedAt: 3 },
+          { id: 'me', name: 'Vanilla Hare', role: 'host', joinedAt: 1 },
+          { id: 'v1', name: 'Maple Wren', role: 'guest', joinedAt: 2 },
+          { id: 'v2', name: 'Cocoa Badger', role: 'cohost', joinedAt: 3 },
         ],
       }
     : null;
@@ -57,13 +57,13 @@
     list,
     room,
     me: 'me' as string | null,
-    role: (room ? 'owner' : null) as 'owner' | 'visitor' | null,
+    role: (room ? 'host' : null) as 'host' | 'cohost' | 'guest' | null,
     joined: false,
     error: null as string | null,
     clockOffset: 0,
     join: async () => {},
     leave: async () => {},
-    promote: async () => {},
+    setRole: async () => {},
   });
 </script>
 

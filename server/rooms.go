@@ -34,7 +34,8 @@ func (e *apiError) Error() string { return e.msg }
 var (
 	errNoRoom      = &apiError{404, "no such room"}
 	errNotMember   = &apiError{403, "not a member of that room"}
-	errNotOwner    = &apiError{403, "only an owner can do that"}
+	errNotOwner    = &apiError{403, "only a host or co-host can do that"}
+	errNotHost     = &apiError{403, "only the host can do that"}
 	errNoMember    = &apiError{404, "no such member"}
 	errRoomsFull   = &apiError{429, "too many rooms"}
 	errRoomFull    = &apiError{429, "room is full"}
@@ -173,9 +174,9 @@ func (r *room) view() Room {
 	return Room{ID: r.id, Settings: r.settings, Timer: r.timer, Members: ms}
 }
 
-func (r *room) ownerName() string {
+func (r *room) hostName() string {
 	for _, m := range r.members {
-		if m.role == roleOwner {
+		if m.role == roleHost {
 			return m.name
 		}
 	}
@@ -190,7 +191,7 @@ func (h *hub) summaries() []RoomSummary {
 	sort.Slice(rs, func(i, j int) bool { return rs[i].seq < rs[j].seq })
 	out := make([]RoomSummary, len(rs))
 	for i, r := range rs {
-		out[i] = RoomSummary{ID: r.id, OwnerName: r.ownerName(), MemberCount: len(r.members),
+		out[i] = RoomSummary{ID: r.id, OwnerName: r.hostName(), MemberCount: len(r.members),
 			DrinkID: r.settings.DrinkID, Timer: r.timer}
 	}
 	return out
@@ -345,19 +346,30 @@ func (h *hub) leaveLocked(c *client) {
 		h.logf("room %s removed (empty)", r.id)
 		return
 	}
-	if !hasOwner(r) {
-		r.members[0].role = roleOwner
+	if !hasHost(r) {
+		nextHost(r).role = roleHost
 	}
 	h.touchAll(r)
 }
 
-func hasOwner(r *room) bool {
+func hasHost(r *room) bool {
 	for _, m := range r.members {
-		if m.role == roleOwner {
+		if m.role == roleHost {
 			return true
 		}
 	}
 	return false
+}
+
+// nextHost picks the earliest-joined co-host, else the earliest-joined guest.
+// members is in join order and must be non-empty.
+func nextHost(r *room) *member {
+	for _, m := range r.members {
+		if m.role == roleCohost {
+			return m
+		}
+	}
+	return r.members[0]
 }
 
 // resolveName picks the body name, falling back to the stream's name.
@@ -382,12 +394,13 @@ func (h *hub) memberOf(c *client, roomID string) (*room, *member, error) {
 	return nil, nil, errNotMember
 }
 
+// ownerOf returns the room if the caller is its host or a co-host.
 func (h *hub) ownerOf(c *client, roomID string) (*room, error) {
 	r, m, err := h.memberOf(c, roomID)
 	if err != nil {
 		return nil, err
 	}
-	if m.role != roleOwner {
+	if m.role == roleGuest {
 		return nil, errNotOwner
 	}
 	return r, nil
@@ -415,7 +428,7 @@ func (h *hub) CreateRoom(token, name string, s Settings, t Timer) (Room, error) 
 	h.leaveLocked(c)
 	h.nextSeq++
 	r := &room{id: h.newRoomID(), seq: h.nextSeq, settings: s, timer: t, setAt: h.now()}
-	r.members = []*member{{c: c, name: name, role: roleOwner, joinedAt: h.nowMs()}}
+	r.members = []*member{{c: c, name: name, role: roleHost, joinedAt: h.nowMs()}}
 	h.rooms[r.id] = r
 	c.roomID = r.id
 	h.dirty[c] = struct{}{}
@@ -424,7 +437,7 @@ func (h *hub) CreateRoom(token, name string, s Settings, t Timer) (Room, error) 
 	return r.view(), nil
 }
 
-// Join adds the caller as a visitor. Joining the room you are already in is a no-op.
+// Join adds the caller as a guest. Joining the room you are already in is a no-op.
 func (h *hub) Join(token, roomID, name string) (Room, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -446,7 +459,7 @@ func (h *hub) Join(token, roomID, name string) (Room, error) {
 		return Room{}, errRoomFull
 	}
 	h.leaveLocked(c)
-	r.members = append(r.members, &member{c: c, name: name, role: roleVisitor, joinedAt: h.nowMs()})
+	r.members = append(r.members, &member{c: c, name: name, role: roleGuest, joinedAt: h.nowMs()})
 	c.roomID = r.id
 	h.touchAll(r)
 	h.publish()
@@ -468,7 +481,7 @@ func (h *hub) Leave(token, roomID string) error {
 	return nil
 }
 
-// Patch replaces the given parts of the room; owners only. A nil part is kept.
+// Patch replaces the given parts of the room; host and co-hosts only. A nil part is kept.
 func (h *hub) Patch(token, roomID string, s *Settings, t *Timer) (Room, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -492,23 +505,32 @@ func (h *hub) Patch(token, roomID string, s *Settings, t *Timer) (Room, error) {
 	return r.view(), nil
 }
 
-// Promote makes another member an owner; owners only. An unknown member id is
-// 404 (the room exists, the member does not), checked after the caller's own
-// permission so that non-owners learn nothing about membership.
-func (h *hub) Promote(token, roomID, targetID string) (Room, error) {
+// SetRole makes another member a co-host or a guest; the host only. The host's
+// own role cannot change (400). An unknown member id is 404, checked after the
+// caller's permission so that non-hosts learn nothing about membership.
+func (h *hub) SetRole(token, roomID, targetID, role string) (Room, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	c, err := h.clientLocked(token)
 	if err != nil {
 		return Room{}, err
 	}
-	r, err := h.ownerOf(c, roomID)
+	r, me, err := h.memberOf(c, roomID)
 	if err != nil {
 		return Room{}, err
 	}
+	if me.role != roleHost {
+		return Room{}, errNotHost
+	}
+	if role != roleCohost && role != roleGuest {
+		return Room{}, badRequest("role must be cohost or guest")
+	}
 	for _, m := range r.members {
 		if m.c.id == targetID {
-			m.role = roleOwner
+			if m.role == roleHost {
+				return Room{}, badRequest("the host's role cannot be changed")
+			}
+			m.role = role
 			h.touchAll(r)
 			h.publish()
 			return r.view(), nil

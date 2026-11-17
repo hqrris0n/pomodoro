@@ -35,13 +35,13 @@ function fake(over: Record<string, unknown> = {}) {
     list: summaries,
     room: null as Room | null,
     me: 'me' as string | null,
-    role: null as 'owner' | 'visitor' | null,
+    role: null as 'host' | 'cohost' | 'guest' | null,
     joined: false,
     error: null as string | null,
     clockOffset: 0,
     join: vi.fn(async () => {}),
     leave: vi.fn(async () => {}),
-    promote: vi.fn(async () => {}),
+    setRole: vi.fn(async () => {}),
     ...over,
   };
 }
@@ -82,7 +82,7 @@ describe('ClocksMenu', () => {
     expect(btn).toHaveFocus();
   });
 
-  it('lists the rooms with owner, live status and people count', () => {
+  it('lists the rooms with host, live status and people count', () => {
     openMenu(fake());
     expect(screen.getByText('Mocha Otter')).toBeInTheDocument();
     expect(screen.getByText('24:00 left · round 1 of 3')).toBeInTheDocument();
@@ -114,26 +114,50 @@ describe('ClocksMenu', () => {
     expect(store.join).toHaveBeenCalledExactlyOnceWith('a');
   });
 
-  it('lets an owner promote a visitor', async () => {
+  it('lets the host promote a guest and demote a co-host', async () => {
     const store = fake({
-      role: 'owner',
-      room: room([m('me', 'Vanilla Hare', 'owner'), m('v1', 'Maple Wren', 'visitor')]),
+      role: 'host',
+      room: room([
+        m('me', 'Vanilla Hare', 'host'),
+        m('v1', 'Maple Wren', 'guest'),
+        m('v2', 'Cocoa Badger', 'cohost'),
+      ]),
+      me: 'me',
     });
-    openMenu(store);
-    expect(screen.getByText('(you)')).toBeInTheDocument();
-    await fireEvent.click(screen.getByRole('button', { name: 'Make owner' }));
-    expect(store.promote).toHaveBeenCalledExactlyOnceWith('v1');
-    expect(screen.queryByRole('button', { name: 'Stop following' })).toBeNull();
+    render(ClocksMenu, { store, startOpen: true });
+    expect(screen.getByText('· host')).toBeInTheDocument();
+    expect(screen.getByText('· co-host')).toBeInTheDocument();
+    expect(screen.getByText('· guest')).toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: /^(Promote|Demote)$/ })).toHaveLength(2);
+    await fireEvent.click(screen.getByRole('button', { name: 'Promote' }));
+    expect(store.setRole).toHaveBeenLastCalledWith('v1', 'cohost');
+    await fireEvent.click(screen.getByRole('button', { name: 'Demote' }));
+    expect(store.setRole).toHaveBeenLastCalledWith('v2', 'guest');
   });
 
-  it('lets a visitor stop following', async () => {
+  it('gives a co-host no promote or demote buttons', () => {
     const store = fake({
-      role: 'visitor',
+      role: 'cohost',
+      room: room([
+        m('h', 'Mocha Otter', 'host'),
+        m('me', 'Vanilla Hare', 'cohost'),
+        m('v1', 'Maple Wren', 'guest'),
+      ]),
+      me: 'me',
+    });
+    render(ClocksMenu, { store, startOpen: true });
+    expect(screen.queryByRole('button', { name: 'Promote' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Demote' })).toBeNull();
+  });
+
+  it('lets a guest stop following', async () => {
+    const store = fake({
+      role: 'guest',
       joined: true,
-      room: room([m('o', 'Mocha Otter', 'owner'), m('me', 'Vanilla Hare', 'visitor')]),
+      room: room([m('o', 'Mocha Otter', 'host'), m('me', 'Vanilla Hare', 'guest')]),
     });
     openMenu(store);
-    expect(screen.queryByRole('button', { name: 'Make owner' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Promote' })).toBeNull();
     await fireEvent.click(screen.getByRole('button', { name: 'Stop following' }));
     expect(store.leave).toHaveBeenCalledOnce();
   });

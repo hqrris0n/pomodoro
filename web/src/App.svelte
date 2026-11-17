@@ -20,7 +20,7 @@
   const screen = $derived<'setup' | 'timer'>(timer.state !== null ? 'timer' : 'setup');
   let settingsOpen = $state(false);
 
-  const lockedBy = $derived(rooms.ownerName ?? undefined);
+  const lockedBy = $derived(rooms.hostName ?? undefined);
   const lockedNote = $derived(
     `You're following ${lockedBy ?? 'someone'}'s timer. Only an owner can change this.`,
   );

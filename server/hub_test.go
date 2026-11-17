@@ -128,13 +128,13 @@ func wantStatus(t *testing.T, err error, status int) {
 	}
 }
 
-func TestCreateMakesCreatorSoleOwnerAndAnnouncesIt(t *testing.T) {
+func TestCreateMakesCreatorSoleHostAndAnnouncesIt(t *testing.T) {
 	h, _ := newTestHub()
 	watcher, _ := h.Connect(tok(9), "")
 	drain(watcher)
 
 	r := mustCreate(t, h, tok(1), "Ada")
-	if len(r.Members) != 1 || r.Members[0].Role != roleOwner || r.Members[0].Name != "Ada" {
+	if len(r.Members) != 1 || r.Members[0].Role != roleHost || r.Members[0].Name != "Ada" {
 		t.Fatalf("members = %+v", r.Members)
 	}
 	ev := lastOf(drain(watcher), "rooms")
@@ -174,13 +174,13 @@ func TestValidateTimerAnchor(t *testing.T) {
 
 func ptr[T any](v T) *T { return &v }
 
-func TestJoinAsVisitorAndSwitchRooms(t *testing.T) {
+func TestJoinAsGuestAndSwitchRooms(t *testing.T) {
 	h, _ := newTestHub()
 	a := mustCreate(t, h, tok(1), "Ada")
 	b := mustCreate(t, h, tok(2), "Bo")
 	mustJoin(t, h, tok(3), a.ID, "Cy")
 	got, _ := h.room(a.ID)
-	if roleOf(got, tok(3)) != roleVisitor {
+	if roleOf(got, tok(3)) != roleGuest {
 		t.Fatalf("members = %+v", got.Members)
 	}
 	// Joining b leaves a, which keeps its owner.
@@ -223,28 +223,74 @@ func TestPatchPermissions(t *testing.T) {
 	}
 }
 
-func TestPromote(t *testing.T) {
+func TestSetRole(t *testing.T) {
 	h, _ := newTestHub()
 	r := mustCreate(t, h, tok(1), "Ada")
 	mustJoin(t, h, tok(2), r.ID, "Bo")
 	mustJoin(t, h, tok(3), r.ID, "Cy")
 
-	_, err := h.Promote(tok(2), r.ID, memberID(tok(3)))
+	// Only the host may change roles; a guest and a co-host both get 403.
+	_, err := h.SetRole(tok(2), r.ID, memberID(tok(3)), roleCohost)
 	wantStatus(t, err, 403)
-	// An unknown member id is 404: the room exists but that member does not.
-	_, err = h.Promote(tok(1), r.ID, "nobody00000")
+	if _, err := h.SetRole(tok(1), r.ID, memberID(tok(2)), roleCohost); err != nil {
+		t.Fatal(err)
+	}
+	_, err = h.SetRole(tok(2), r.ID, memberID(tok(3)), roleCohost)
+	wantStatus(t, err, 403)
+	// The host's own role cannot change; bad roles are 400; unknown members 404.
+	_, err = h.SetRole(tok(1), r.ID, memberID(tok(1)), roleGuest)
+	wantStatus(t, err, 400)
+	_, err = h.SetRole(tok(1), r.ID, memberID(tok(3)), roleHost)
+	wantStatus(t, err, 400)
+	_, err = h.SetRole(tok(1), r.ID, "nobody00000", roleCohost)
 	wantStatus(t, err, 404)
 
-	got, err := h.Promote(tok(1), r.ID, memberID(tok(2)))
+	got, _ := h.room(r.ID)
+	if roleOf(got, tok(1)) != roleHost || roleOf(got, tok(2)) != roleCohost || roleOf(got, tok(3)) != roleGuest {
+		t.Fatalf("members = %+v", got.Members)
+	}
+	got, err = h.SetRole(tok(1), r.ID, memberID(tok(2)), roleGuest)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if roleOf(got, tok(2)) != roleOwner || roleOf(got, tok(1)) != roleOwner || roleOf(got, tok(3)) != roleVisitor {
+	if roleOf(got, tok(2)) != roleGuest {
 		t.Fatalf("members = %+v", got.Members)
 	}
 }
 
-func TestOwnerLeavingPassesOwnershipToEarliestJoiner(t *testing.T) {
+func TestHostLeavingPrefersEarliestCohostThenEarliestGuest(t *testing.T) {
+	h, clk := newTestHub()
+	r := mustCreate(t, h, tok(1), "Ada")
+	for i, n := range []string{"Bo", "Cy", "Di"} {
+		clk.Advance(time.Second)
+		mustJoin(t, h, tok(i+2), r.ID, n)
+	}
+	// Di (joined last) is the only co-host, so beats the earlier guests.
+	if _, err := h.SetRole(tok(1), r.ID, memberID(tok(4)), roleCohost); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := h.room(r.ID)
+	if err := h.Leave(tok(1), r.ID); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := h.room(r.ID)
+	if roleOf(after, tok(4)) != roleHost || roleOf(after, tok(2)) != roleGuest || roleOf(after, tok(3)) != roleGuest {
+		t.Fatalf("members = %+v", after.Members)
+	}
+	if after.Timer != before.Timer {
+		t.Fatal("timer changed")
+	}
+	// No co-hosts left: the earliest guest (Bo) takes over.
+	if err := h.Leave(tok(4), r.ID); err != nil {
+		t.Fatal(err)
+	}
+	after, _ = h.room(r.ID)
+	if roleOf(after, tok(2)) != roleHost || roleOf(after, tok(3)) != roleGuest {
+		t.Fatalf("members = %+v", after.Members)
+	}
+}
+
+func TestHostLeavingPassesHostToEarliestJoiner(t *testing.T) {
 	h, clk := newTestHub()
 	r := mustCreate(t, h, tok(1), "Ada")
 	clk.Advance(time.Second)
@@ -257,7 +303,7 @@ func TestOwnerLeavingPassesOwnershipToEarliestJoiner(t *testing.T) {
 		t.Fatal(err)
 	}
 	after, _ := h.room(r.ID)
-	if roleOf(after, tok(2)) != roleOwner || roleOf(after, tok(3)) != roleVisitor {
+	if roleOf(after, tok(2)) != roleHost || roleOf(after, tok(3)) != roleGuest {
 		t.Fatalf("members = %+v", after.Members)
 	}
 	if after.Timer != before.Timer {
@@ -293,7 +339,7 @@ func TestGracePeriod(t *testing.T) {
 	clk.Advance(30 * time.Second)
 	h.Sweep()
 	got, _ := h.room(r.ID)
-	if len(got.Members) != 1 || roleOf(got, tok(2)) != roleOwner {
+	if len(got.Members) != 1 || roleOf(got, tok(2)) != roleHost {
 		t.Fatalf("members = %+v", got.Members)
 	}
 	// Once the last member's stream is gone and the grace period ends, the room goes.
@@ -374,7 +420,7 @@ func TestNoTokensInEvents(t *testing.T) {
 	r := mustCreate(t, h, a, "Ada")
 	cn, _ := h.Connect(b, "")
 	mustJoin(t, h, b, r.ID, "Bo")
-	if _, err := h.Promote(a, r.ID, memberID(b)); err != nil {
+	if _, err := h.SetRole(a, r.ID, memberID(b), roleCohost); err != nil {
 		t.Fatal(err)
 	}
 	evs := drain(cn)

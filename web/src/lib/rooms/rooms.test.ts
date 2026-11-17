@@ -53,7 +53,7 @@ const mkRoom = (over: Partial<Room> = {}): Room => ({
   id: 'r1',
   settings: SETTINGS,
   timer: TIMER,
-  members: [member('me', 'owner', 1)],
+  members: [member('me', 'host', 1)],
   ...over,
 });
 
@@ -61,11 +61,11 @@ function setup() {
   const api = {
     createRoom: vi.fn(async () => mkRoom()),
     joinRoom: vi.fn(async () =>
-      mkRoom({ id: 'other', members: [member('o', 'owner', 1), member('me', 'visitor', 2)] }),
+      mkRoom({ id: 'other', members: [member('o', 'host', 1), member('me', 'guest', 2)] }),
     ),
     leaveRoom: vi.fn(async () => ({})),
     patchRoom: vi.fn(async () => mkRoom()),
-    promote: vi.fn(async () => mkRoom()),
+    setRole: vi.fn(async () => mkRoom()),
     rename: vi.fn(async () => ({})),
   };
   const identity = new Identity();
@@ -112,7 +112,7 @@ function setup() {
     await settle();
   };
   /** Online, timer started, and the room has been created: I am the owner of r1. */
-  const asOwner = async () => {
+  const asHost = async () => {
     await connect();
     await startTimer();
     api.createRoom.mockClear();
@@ -132,7 +132,7 @@ function setup() {
     settle,
     connect,
     startTimer,
-    asOwner,
+    asHost,
   };
 }
 type H = ReturnType<typeof setup>;
@@ -170,7 +170,7 @@ describe('publishing my timer', () => {
       },
       timer: h.timer.state,
     });
-    expect(h.rooms.role).toBe('owner');
+    expect(h.rooms.role).toBe('host');
   });
 
   it('sends nothing while hidden, and creates when turned on again', async () => {
@@ -186,14 +186,14 @@ describe('publishing my timer', () => {
   });
 
   it('patches the timer once when the owner pauses', async () => {
-    await h.asOwner();
+    await h.asHost();
     h.timer.pause();
     expect(h.api.patchRoom).toHaveBeenCalledOnce();
     expect(h.api.patchRoom).toHaveBeenCalledWith(h.identity.token, 'r1', { timer: h.timer.state });
   });
 
   it('patches settings after the debounce, and coalesces rapid mix changes', async () => {
-    await h.asOwner();
+    await h.asHost();
     h.drinks.select('tea');
     flushSync();
     expect(h.api.patchRoom).not.toHaveBeenCalled();
@@ -217,21 +217,21 @@ describe('publishing my timer', () => {
   });
 
   it('leaves the room when the owner stops the timer', async () => {
-    await h.asOwner();
+    await h.asHost();
     h.timer.stop();
     expect(h.api.leaveRoom).toHaveBeenCalledWith(h.identity.token, 'r1');
     expect(h.rooms.room).toBeNull();
   });
 
   it('re-creates the room when the server forgot it', async () => {
-    await h.asOwner();
+    await h.asHost();
     h.es().emit('room', { now: Date.now(), you: 'me', room: null });
     await h.settle();
     expect(h.api.createRoom).toHaveBeenCalledOnce();
   });
 
   it('re-creates with the time already elapsed, since the server re-anchors to its now', async () => {
-    await h.asOwner();
+    await h.asHost();
     await vi.advanceTimersByTimeAsync(5 * 60_000);
     h.es().emit('room', { now: Date.now(), you: 'me', room: null });
     await h.settle();
@@ -255,7 +255,7 @@ describe('two tabs of one browser (one token, one member)', () => {
     const a = h;
     const b = setup();
     try {
-      await a.asOwner();
+      await a.asHost();
       // Tab B takes its turn on the token's single stream and mirrors r1.
       b.es().emit('open');
       b.es().emit('room', { now: Date.now(), you: 'me', room: mkRoom({ timer: a.timer.state! }) });
@@ -290,8 +290,8 @@ describe('two tabs of one browser (one token, one member)', () => {
 });
 
 describe('applying remote state', () => {
-  it('mirrors a co-owner change without sending any request', async () => {
-    await h.asOwner();
+  it('mirrors a co-host change without sending any request', async () => {
+    await h.asHost();
     const paused: TimerState = { ...TIMER, elapsedMs: 5000, anchorAt: null };
     h.es().emit('room', {
       now: Date.now(),
@@ -299,7 +299,7 @@ describe('applying remote state', () => {
       room: mkRoom({
         timer: paused,
         settings: { ...SETTINGS, drinkId: 'tea', backgroundRotateMin: 5, mix: { hum: 0.3 } },
-        members: [member('o', 'owner', 0), member('me', 'owner', 1)],
+        members: [member('o', 'host', 0), member('me', 'cohost', 1)],
       }),
     });
     flushSync();
@@ -317,7 +317,7 @@ describe('applying remote state', () => {
   });
 
   it('keeps my own room out of the list', async () => {
-    await h.asOwner();
+    await h.asHost();
     const summary = (id: string) => ({
       id,
       ownerName: id,
@@ -329,23 +329,34 @@ describe('applying remote state', () => {
     expect(h.rooms.list.map((r) => r.id)).toEqual(['r2']);
   });
 
-  it('becomes an owner and unlocked when promoted, then patches changes', async () => {
+  it('becomes a co-host and unlocked when promoted, then patches changes', async () => {
     await h.connect();
     await h.rooms.join('other');
     expect(h.rooms.locked).toBe(true);
     h.es().emit('room', {
       now: Date.now(),
       you: 'me',
-      room: mkRoom({ id: 'other', members: [member('o', 'owner', 1), member('me', 'owner', 2)] }),
+      room: mkRoom({ id: 'other', members: [member('o', 'host', 1), member('me', 'cohost', 2)] }),
     });
     flushSync();
-    expect(h.rooms.role).toBe('owner');
+    expect(h.rooms.role).toBe('cohost');
     expect(h.rooms.locked).toBe(false);
     expect(h.api.patchRoom).not.toHaveBeenCalled();
     h.timer.pause();
     expect(h.api.patchRoom).toHaveBeenCalledWith(h.identity.token, 'other', {
       timer: h.timer.state,
     });
+  });
+});
+
+describe('roles', () => {
+  it('lets the host change a role through the API and updates the room', async () => {
+    await h.asHost();
+    const next = mkRoom({ members: [member('me', 'host', 1), member('v', 'cohost', 2)] });
+    h.api.setRole.mockResolvedValueOnce(next);
+    await h.rooms.setRole('v', 'cohost');
+    expect(h.api.setRole).toHaveBeenCalledWith(h.identity.token, 'r1', 'v', 'cohost');
+    expect(h.rooms.room).toEqual(next);
   });
 });
 
@@ -362,9 +373,9 @@ describe('joining and leaving', () => {
     expect(h.api.joinRoom).toHaveBeenCalledWith(h.identity.token, 'other', {
       name: h.identity.name,
     });
-    expect(h.rooms.role).toBe('visitor');
+    expect(h.rooms.role).toBe('guest');
     expect(h.rooms.locked).toBe(true);
-    expect(h.rooms.ownerName).toBe('Name o');
+    expect(h.rooms.hostName).toBe('Name o');
     expect(h.drinks.selectedId).toBe('mocha');
     expect(h.backgrounds.selectedId).toBe('night-lights');
     expect(h.sound.mix).toEqual({ rain: 0.5 });
@@ -414,7 +425,7 @@ describe('joining and leaving', () => {
     expect(h.rooms.error).toBe('That timer is full.');
   });
 
-  it('keeps rotation off for visitors and non-first owners, and restores it on leave', async () => {
+  it('keeps rotation off for visitors and co-hosts, and restores it on leave', async () => {
     await h.connect();
     await h.rooms.join('other');
     expect(h.backgrounds.rotateMin).toBe(0);
@@ -424,7 +435,7 @@ describe('joining and leaving', () => {
       room: mkRoom({
         id: 'other',
         settings: { ...SETTINGS, backgroundRotateMin: 10 },
-        members: [member('o', 'owner', 1), member('me', 'owner', 2)],
+        members: [member('o', 'host', 1), member('me', 'cohost', 2)],
       }),
     });
     flushSync();

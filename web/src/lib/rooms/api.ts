@@ -1,6 +1,7 @@
 import type { Settings, TimerState } from '../types';
 
-export type Member = { id: string; name: string; role: 'owner' | 'visitor'; joinedAt: number };
+export type Role = 'host' | 'cohost' | 'guest';
+export type Member = { id: string; name: string; role: Role; joinedAt: number };
 export type Room = { id: string; settings: Settings; timer: TimerState; members: Member[] };
 export type RoomSummary = {
   id: string;
@@ -68,8 +69,13 @@ export function patchRoom(
   return call(token, 'PATCH', `/rooms/${id(roomId)}`, body);
 }
 
-export function promote(token: string, roomId: string, memberId: string): Promise<Room> {
-  return call(token, 'POST', `/rooms/${id(roomId)}/promote`, { memberId });
+export function setRole(
+  token: string,
+  roomId: string,
+  memberId: string,
+  role: 'cohost' | 'guest',
+): Promise<Room> {
+  return call(token, 'POST', `/rooms/${id(roomId)}/role`, { memberId, role });
 }
 
 export function rename(token: string, name: string): Promise<Record<string, never>> {
@@ -81,6 +87,6 @@ export type RoomsApi = {
   joinRoom: typeof joinRoom;
   leaveRoom: typeof leaveRoom;
   patchRoom: typeof patchRoom;
-  promote: typeof promote;
+  setRole: typeof setRole;
   rename: typeof rename;
 };

@@ -8,6 +8,8 @@
   import type { RoomSummary } from './api';
   import { rooms, type RoomsStore } from './rooms.svelte';
 
+  const ROLE_LABEL = { host: 'host', cohost: 'co-host', guest: 'guest' } as const;
+
   type Store = Pick<
     RoomsStore,
     | 'online'
@@ -20,7 +22,7 @@
     | 'clockOffset'
     | 'join'
     | 'leave'
-    | 'promote'
+    | 'setRole'
   >;
 
   let { store = rooms, startOpen = false }: { store?: Store; startOpen?: boolean } = $props();
@@ -122,11 +124,23 @@
                 <span class="who">
                   <span class="name">{m.name}</span>
                   {#if m.id === store.me}<span class="tag">(you)</span>{/if}
-                  {#if m.role === 'owner'}<span class="tag">owner</span>{/if}
+                  <span class="tag">· {ROLE_LABEL[m.role]}</span>
                 </span>
-                {#if store.role === 'owner' && m.role === 'visitor'}
-                  <button type="button" class="btn small" onclick={() => store.promote(m.id)}>
-                    Make owner
+                {#if store.role === 'host' && m.id !== store.me && m.role === 'guest'}
+                  <button
+                    type="button"
+                    class="btn small"
+                    onclick={() => store.setRole(m.id, 'cohost')}
+                  >
+                    Promote
+                  </button>
+                {:else if store.role === 'host' && m.id !== store.me && m.role === 'cohost'}
+                  <button
+                    type="button"
+                    class="btn small"
+                    onclick={() => store.setRole(m.id, 'guest')}
+                  >
+                    Demote
                   </button>
                 {/if}
               </li>

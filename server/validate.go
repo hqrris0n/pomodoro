@@ -46,8 +46,9 @@ type RoomSummary struct {
 }
 
 const (
-	roleOwner   = "owner"
-	roleVisitor = "visitor"
+	roleHost   = "host"
+	roleCohost = "cohost"
+	roleGuest  = "guest"
 
 	minFocusMs = 60_000
 	maxFocusMs = 10_800_000
