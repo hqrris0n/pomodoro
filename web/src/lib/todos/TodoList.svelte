@@ -1,6 +1,7 @@
 <script lang="ts">
   import { tick } from 'svelte';
   import { flip } from 'svelte/animate';
+  import { sound } from '../audio/mixes.svelte';
   import { todos } from './todos.svelte';
 
   let text = $state('');
@@ -157,7 +158,14 @@
   {/if}
 
   {#if hasDone}
-    <button type="button" class="btn clear" onclick={() => todos.clearCompleted()}>
+    <button
+      type="button"
+      class="btn clear"
+      onclick={() => {
+        if (hasDone) void sound.effect('pop');
+        todos.clearCompleted();
+      }}
+    >
       Clear completed
     </button>
   {/if}

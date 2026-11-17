@@ -1,8 +1,9 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import TodoList from './TodoList.svelte';
 import { todos } from './todos.svelte';
+import { sound } from '../audio/mixes.svelte';
 
 const rowTexts = () =>
   screen.getAllByRole('checkbox').map((c) => c.closest('li')!.textContent!.trim());
@@ -38,6 +39,16 @@ describe('TodoList', () => {
     expect(screen.queryByText('one')).toBeNull();
     expect(screen.getByText('two')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Clear completed' })).toBeNull();
+  });
+
+  it('plays the pop when clearing completed items', async () => {
+    const effect = vi.spyOn(sound, 'effect').mockResolvedValue();
+    todos.add('one');
+    render(TodoList);
+    await fireEvent.click(screen.getByRole('checkbox', { name: 'one' }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Clear completed' }));
+    expect(effect).toHaveBeenCalledWith('pop');
+    effect.mockRestore();
   });
 
   it('moves an item down with ArrowDown on its handle', async () => {

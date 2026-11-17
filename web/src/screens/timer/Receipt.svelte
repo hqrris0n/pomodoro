@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { sound } from '../../lib/audio/mixes.svelte';
   import { load, save } from '../../lib/storage';
   import TodoList from '../../lib/todos/TodoList.svelte';
   import { todos } from '../../lib/todos/todos.svelte';
@@ -23,6 +24,7 @@
   });
 
   function toggle() {
+    void sound.effect('page');
     if (wide) {
       wideOpen = !wideOpen;
       save('receiptOpen', wideOpen);
@@ -40,7 +42,10 @@
   );
 
   function onkeydown(event: KeyboardEvent) {
-    if (event.key === 'Escape') sheetOpen = false;
+    if (event.key === 'Escape' && sheetOpen) {
+      sheetOpen = false;
+      void sound.effect('page');
+    }
   }
 </script>
 
