@@ -70,6 +70,12 @@ room at all.
 | `PUT /me`                     | anyone  | `{name}`                          | Renames the caller in their room. |
 | `GET /health`                 | anyone  | —                                 | `200 ok` |
 
+Responses: `POST /rooms`, `join`, `PATCH` and `promote` return the `Room`;
+`leave` and `PUT /me` return `{}`. `name` in a body is optional and falls back
+to the name given on the stream. `PUT /me` while in no room is a 403 (the name
+is sent again with the next create or join). Joining the room you are already
+in returns it unchanged.
+
 `timer.anchorAt` sent by a client is treated as a boolean: non-null means
 "running", and the server replaces it with its own `now`. Errors are
 `{error: string}` with 400 (invalid), 403 (not an owner / not a member),
