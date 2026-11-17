@@ -28,11 +28,12 @@
   --s6: 48px;
 
   /* type */
-  --font-display: 'Jersey 25', 'Pixelify Sans', monospace;
-  --font-body: 'Pixelify Sans', monospace;
-  --t1: 16px;
-  --t2: 20px;
-  --t3: 28px;
+  /* One pixel face for everything; its digits stay legible at small sizes. */
+  --font-display: 'Jersey 25', monospace;
+  --font-body: 'Jersey 25', monospace;
+  --t1: 20px;
+  --t2: 25px;
+  --t3: 30px;
   --t4: 40px;
   --t-timer: clamp(72px, 18vw, 160px);
 

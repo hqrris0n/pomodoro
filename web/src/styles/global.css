@@ -1,6 +1,4 @@
 @import '@fontsource/jersey-25/latin-400.css';
-@import '@fontsource/pixelify-sans/latin-400.css';
-@import '@fontsource/pixelify-sans/latin-600.css';
 @import './tokens.css';
 
 *,
@@ -22,7 +20,7 @@ body {
   color: var(--ink);
   font-family: var(--font-body);
   font-size: var(--t1);
-  line-height: 1.4;
+  line-height: 1.2;
   /* keep pixel fonts crisp */
   -webkit-font-smoothing: none;
   font-smooth: never;

@@ -1,6 +1,6 @@
 // Scene geometry, in grid units. One unit is one art pixel.
 
-export const SCENE = { w: 160, h: 100 } as const;
+export const SCENE = { w: 160, h: 96 } as const;
 
 /** First row of the counter; everything stands on row COUNTER_Y - 1. */
 export const COUNTER_Y = 86;

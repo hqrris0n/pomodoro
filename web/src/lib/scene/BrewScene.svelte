@@ -86,7 +86,7 @@
     display: block;
     width: 100%;
     height: auto;
-    aspect-ratio: 160 / 100;
+    aspect-ratio: 160 / 96;
     overflow: visible;
   }
 

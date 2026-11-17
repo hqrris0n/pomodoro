@@ -35,15 +35,15 @@ colours outside the palette. Text on `--foam` is `--ink` (never grey).
 
 ## Type
 
-Two pixel faces, self-hosted through `@fontsource` (no requests to third
-parties at runtime).
+One pixel face, **Jersey 25**, self-hosted through `@fontsource` (no requests
+to third parties at runtime). It is tall and condensed, and its digits stay
+legible at small sizes, which matters for a timer. (Pixelify Sans was tried
+for body text and dropped: its 5 reads as an S.)
 
-- **Jersey 25** — timer digits, screen titles, ticket section headings, the
-  primary button. Tall and condensed; set it large (the timer is the biggest
-  thing on the page: `clamp(72px, 18vw, 160px)`).
-- **Pixelify Sans** (400 and 600) — everything else. Never below 16px.
+- Timer digits are the biggest thing on the page: `clamp(72px, 18vw, 160px)`.
+- Body text is never below 20px.
 
-Scale: 16 / 20 / 28 / 40 / timer. Sentence case everywhere. No all-caps
+Scale: 20 / 25 / 30 / 40 / timer. Sentence case everywhere. No all-caps
 labels, no letter-spacing tricks, no italic.
 
 ## Pixel rules for UI chrome
