@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Mix } from '../types';
+import type { Mix, SavedMix } from '../types';
 import { SoundStore } from './mixes.svelte';
 
 function stubEngine() {
@@ -257,5 +257,64 @@ describe('SoundStore saved mixes', () => {
       'Mine',
     ]);
     expect(engine.mixes.at(-1)).toEqual({});
+  });
+});
+
+describe('SoundStore room list', () => {
+  const room: SavedMix[] = [
+    { id: 'h1', name: 'Host mix', mix: { rain: 0.5 } },
+    { id: 'h2', name: 'Quiet morning', mix: { hum: 0.2 } },
+  ];
+
+  it('prefers the room list without touching my stored mixes or links, and clears back', () => {
+    const { store } = make();
+    const stored = localStorage.getItem('cafe:mixes');
+    store.setRoomMixes(room);
+    expect(store.saved.map((m) => m.id)).toEqual(['h1', 'h2']);
+    store.loadSaved('h1');
+    expect(store.mix).toEqual({ rain: 0.5 });
+    expect(store.activeSavedId).toBe('h1');
+    expect(store.renameSaved('h1', 'x')).not.toBeNull();
+    store.deleteSaved('h1');
+    expect(store.saved).toHaveLength(2);
+    expect(localStorage.getItem('cafe:mixes')).toBe(stored);
+    store.setRoomMixes(null);
+    expect(store.saved.map((m) => m.name)).toEqual(['Quiet morning', 'Busy café', 'Rainy day']);
+    expect(localStorage.getItem('cafe:mixes')).toBe(stored);
+  });
+
+  it('saves through the room only when it can append, and rejects duplicate names', () => {
+    const { store } = make();
+    store.setRoomMixes(room);
+    store.setVolume('rain', 0.3);
+    expect(store.saveCurrent('Study')).toBe('Only the host or a co-host can save mixes.');
+    const append = vi.fn();
+    store.roomAppend = append;
+    expect(store.saveCurrent('quiet MORNING')).toBe('Another mix already has that name.');
+    expect(store.saveCurrent('Study')).toBeNull();
+    expect(append).toHaveBeenCalledWith({
+      id: expect.any(String),
+      name: 'Study',
+      mix: { rain: 0.3 },
+    });
+    expect(store.ownMixes.map((m) => m.name)).not.toContain('Study');
+    store.setRoomMixes(null);
+    expect(store.roomAppend).toBeNull();
+  });
+
+  it('adoptMixes adds only unknown ids, renames clashing names, and never deletes', () => {
+    const { store } = make();
+    const before = store.ownMixes.length;
+    store.adoptMixes([
+      { id: 'builtin:rainy-day', name: 'Changed', mix: {} },
+      { id: 'n1', name: 'Busy café', mix: { rain: 0.2 } },
+      { id: 'n2', name: 'Fresh', mix: { hum: 0.2 } },
+    ]);
+    expect(store.ownMixes).toHaveLength(before + 2);
+    expect(store.ownMixes.find((m) => m.id === 'builtin:rainy-day')!.name).toBe('Rainy day');
+    expect(store.ownMixes.find((m) => m.id === 'n1')!.name).toBe('Busy café (2)');
+    expect(make().store.ownMixes.map((m) => m.id)).toContain('n2');
+    store.adoptMixes([]);
+    expect(store.ownMixes).toHaveLength(before + 2);
   });
 });

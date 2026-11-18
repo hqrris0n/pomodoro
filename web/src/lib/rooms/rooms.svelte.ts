@@ -7,7 +7,7 @@ import { identity } from '../shell/identity.svelte';
 import { load, save } from '../storage';
 import { timer } from '../timer/engine.svelte';
 import { elapsedAt, snapshot } from '../timer/schedule';
-import type { Mix, Settings, TimerState } from '../types';
+import type { Mix, SavedMix, Settings, TimerState } from '../types';
 import * as realApi from './api';
 import {
   ApiError,
@@ -46,7 +46,16 @@ export type RoomsDeps = {
     select(id: string): void;
     setRotate(min: number): void;
   };
-  sound: { mix: Mix; applyMix(mix: Mix): void };
+  sound: {
+    mix: Mix;
+    applyMix(mix: Mix): void;
+    /** The user's own saved mixes, in the form a room accepts. */
+    ownMixes: SavedMix[];
+    roomMixes: SavedMix[] | null;
+    roomAppend: ((mix: SavedMix) => void) | null;
+    setRoomMixes(list: SavedMix[] | null): void;
+    adoptMixes(list: SavedMix[]): void;
+  };
   api: RoomsApi;
   /** Called with each valid sticky note that arrives. */
   onNote?: (note: Note) => void;
@@ -54,7 +63,11 @@ export type RoomsDeps = {
   now?: () => number;
 };
 
-type SettingsSource = Pick<RoomsDeps, 'drinks' | 'backgrounds' | 'sound'>;
+type SettingsSource = {
+  drinks: RoomsDeps['drinks'];
+  backgrounds: RoomsDeps['backgrounds'];
+  sound: Pick<RoomsDeps['sound'], 'mix'>;
+};
 
 function cleanMix(mix: Mix): Mix {
   const out: Mix = {};
@@ -76,6 +89,7 @@ export function currentSettings(src: SettingsSource = { drinks, backgrounds, sou
 }
 
 const sig = (s: Settings) => JSON.stringify({ ...s, mix: cleanMix(s.mix) });
+const sigMixes = (m: SavedMix[] | undefined) => JSON.stringify(m ?? null);
 
 function isDone(state: TimerState, now: number): boolean {
   return snapshot(state, now).phase === 'done';
@@ -130,6 +144,10 @@ export class RoomsStore {
   #timerQueue: Promise<void> = Promise.resolve();
   /** A room I just left: its events may still be in flight and must not pull me back. */
   #leftRoom: string | null = null;
+  /** The saved list last sent to the room as host (undefined: nothing sent as host yet). */
+  #syncedMixes: SavedMix[] | undefined;
+  /** Ids of the room's mixes this host has already seen or published; never adopted again. */
+  #knownMixIds: string[] = [];
 
   constructor(deps: RoomsDeps) {
     this.#d = deps;
@@ -287,7 +305,11 @@ export class RoomsStore {
   /** Make `room` the current room and mirror it locally without sending anything. */
   #adopt(room: Room, role: Role) {
     const d = this.#d;
-    if (this.room?.id !== room.id) this.#seenRev = 0;
+    if (this.room?.id !== room.id) {
+      this.#seenRev = 0;
+      this.#knownMixIds = [];
+      this.#syncedMixes = undefined;
+    }
     // While my own timer change is on its way, or when this view predates one
     // already seen, the local timer is newer than the event's: keep it.
     const mine = this.#patching > 0 && this.#patchingRoom === room.id;
@@ -307,11 +329,43 @@ export class RoomsStore {
     d.backgrounds.select(room.settings.backgroundId);
     d.sound.applyMix({ ...room.settings.mix });
     d.backgrounds.setRotate(this.#drivesRotation(room) ? room.settings.backgroundRotateMin : 0);
-    this.#synced = sig(this.#effective());
-    if (this.#debounce) {
+    const mixesPending = this.#adoptMixes(room, role);
+    const eff = this.#effective();
+    // A host's own list is not overwritten by the room, so a change of it that
+    // has not been sent yet stays pending.
+    this.#synced = sig(role === 'host' ? { ...eff, mixes: this.#syncedMixes } : eff);
+    if (this.#debounce && !mixesPending) {
       clearTimeout(this.#debounce);
       this.#debounce = null;
     }
+  }
+
+  /**
+   * Host: add the room's new mixes to my own list. Others: show the room's list
+   * instead of mine. Returns true when a host's own list differs from what was sent.
+   */
+  #adoptMixes(room: Room, role: Role): boolean {
+    const d = this.#d;
+    const list = room.settings.mixes;
+    if (role !== 'host') {
+      this.#syncedMixes = undefined;
+      d.sound.setRoomMixes(list ?? null);
+      d.sound.roomAppend = role === 'cohost' && list ? (m) => this.#appendMix(m) : null;
+      return false;
+    }
+    d.sound.setRoomMixes(null);
+    this.#syncedMixes ??= list ?? d.sound.ownMixes;
+    const pending = sigMixes(d.sound.ownMixes) !== sigMixes(this.#syncedMixes);
+    if (list) {
+      const own = d.sound.ownMixes.map((m) => m.id);
+      d.sound.adoptMixes(
+        list.filter((m) => !own.includes(m.id) && !this.#knownMixIds.includes(m.id)),
+      );
+      this.#knownMixIds.push(...list.map((m) => m.id));
+      // Mixes adopted from the room need no echo back unless I had unsent changes of my own.
+      if (!pending) this.#syncedMixes = d.sound.ownMixes;
+    }
+    return sigMixes(d.sound.ownMixes) !== sigMixes(this.#syncedMixes);
   }
 
   #drivesRotation(room: Room): boolean {
@@ -325,6 +379,8 @@ export class RoomsStore {
     if (this.#controls && this.room && !this.#drivesRotation(this.room)) {
       s.backgroundRotateMin = this.room.settings.backgroundRotateMin;
     }
+    // The saved list is the host's to publish; a co-host's patches leave it as it is.
+    if (!this.#controls || this.role === 'host' || !this.room) s.mixes = this.#d.sound.ownMixes;
     return s;
   }
 
@@ -349,6 +405,7 @@ export class RoomsStore {
       save<OwnSettings | null>(SNAPSHOT_KEY, null);
     }
     d.timer.apply(null);
+    d.sound.setRoomMixes(null);
     this.room = null;
     this.role = null;
     this.joined = false;
@@ -444,6 +501,8 @@ export class RoomsStore {
       this.role = 'host';
       this.#seenRev = room.timerRev ?? 0;
       this.#synced = sig(settings);
+      this.#syncedMixes = settings.mixes;
+      this.#knownMixIds = settings.mixes?.map((m) => m.id) ?? [];
     } catch {
       // solo timer keeps working
     } finally {
@@ -463,6 +522,10 @@ export class RoomsStore {
       const s = sig(settings);
       if (s === this.#synced) return;
       this.#synced = s;
+      if (this.role === 'host') {
+        this.#syncedMixes = settings.mixes;
+        this.#knownMixIds.push(...(settings.mixes ?? []).map((m) => m.id));
+      }
       this.#d.api.patchRoom(this.#d.identity.token, room.id, { settings }).catch(() => {});
     }, DEBOUNCE_MS);
   }
@@ -528,6 +591,29 @@ export class RoomsStore {
     } else if (this.#controls) {
       d.timer.stop();
     }
+  }
+
+  /** Co-host: add a mix to the host's list, showing it at once and undoing that if the room refuses. */
+  #appendMix(mix: SavedMix) {
+    const d = this.#d;
+    const room = this.room;
+    if (!room || this.role !== 'cohost') return;
+    const next = [...(d.sound.roomMixes ?? room.settings.mixes ?? []), mix];
+    d.sound.setRoomMixes(next);
+    const settings = { ...this.#effective(), mixes: next };
+    d.api
+      .patchRoom(d.identity.token, room.id, { settings })
+      .then((res) => {
+        if (this.room?.id === room.id && this.role === 'cohost' && res.settings.mixes) {
+          d.sound.setRoomMixes(res.settings.mixes);
+        }
+      })
+      .catch((e: unknown) => {
+        if (this.room?.id === room.id && this.role === 'cohost') {
+          d.sound.setRoomMixes(this.room.settings.mixes ?? null);
+        }
+        this.#fail(e, 'other');
+      });
   }
 
   /** Host only: make another member a co-host or a guest. */

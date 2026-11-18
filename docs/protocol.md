@@ -45,6 +45,12 @@ type Settings = {
   backgroundId: string;            // <= 32 chars
   backgroundRotateMin: number;     // 0 = off, else 1 .. 120
   mix: Record<string, number>;     // channel id -> volume 0..1, <= 16 keys
+  mixes: SavedMix[];               // the host's saved mixes, see "Shared mixes"
+};
+type SavedMix = {
+  id: string;                      // 1 .. 40 chars, unique in the list
+  name: string;                    // 1 .. 30 chars
+  mix: Record<string, number>;     // as above
 };
 type Member = { id: string; name: string; role: 'host' | 'cohost' | 'guest'; joinedAt: number };
 type Room = {
@@ -107,6 +113,33 @@ In `PATCH`, a missing `timer` keeps the timer and `"timer": null` clears it;
 - `note` — `{id, roomId, fromId, fromName, text, sentAt}` (`sentAt` is server
   epoch ms). A sticky note sent to the caller; see below.
 - A comment line `: ping` every 25s to keep proxies from closing the stream.
+
+## Shared mixes
+
+`settings.mixes` is the host's saved sound mixes, at most 40. Everyone in the
+room sees that list in their mixer instead of their own; leaving the room
+brings their own list back untouched.
+
+- A `PATCH` or `POST /rooms` without `mixes` keeps the room's list (a new room
+  starts with `[]`); views always carry the list. Entries that break the limits
+  above are 400. Create and `PATCH` bodies may be up to 32 KB because of this.
+- The host may replace the list freely (add, rename, delete, reorder).
+- A co-host's `PATCH` that carries `mixes` must be the room's current list
+  with new mixes added at the end: if any existing mix was removed, renamed,
+  changed or moved, it is 403 and nothing changes. Co-hosts do not send
+  `mixes` with their ordinary settings patches. Guests get 403 as usual.
+- Client: the host sends their own saved list on create and whenever it
+  changes. A co-host saving a mix sends the room list plus the new mix, and
+  rename, delete and background links are disabled for non-hosts. Background
+  links are never shared.
+- Adoption: when the host's device sees a room view with mix ids it has never
+  seen in this room and does not have, it adds them to its own saved list
+  (persisted and profile-synced as usual); a clashing name gets a " (2)"
+  suffix. It never deletes or edits its own mixes because of a view, and a mix
+  the host deleted is not brought back by a stale view.
+- If the host leaves, the room keeps its current list. The promoted device
+  adopts the room's mixes as above and from then on publishes its own list
+  (its own extra mixes included), so it is the host list going forward.
 
 ## Between timers
 
@@ -227,7 +260,8 @@ untouched and answers every `/profiles` request with 503
 - Host and co-host: local engine is the source of truth; every local change to timer or
   settings is sent with `PATCH`.
 - Guest: local engine and settings are overwritten by each `room` event and
-  all controls for timer, drink, background and mix are disabled. On leaving,
+  all controls for timer, drink, background and mix are disabled, and the
+  host's saved mixes replace their own in the mixer. On leaving,
   the guest's own saved drink, background and mix are restored.
 - Host and co-host send timer patches one at a time, each after the previous
   one is answered, so the server applies them in order. While one is in

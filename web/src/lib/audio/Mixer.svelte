@@ -5,6 +5,9 @@
 
   let { disabled = false, lockedNote }: { disabled?: boolean; lockedNote?: string } = $props();
 
+  // In a room, non-hosts see the host's list: they can load and add mixes, never change them.
+  let manageOff = $derived(disabled || sound.roomMixes !== null);
+
   onMount(() => {
     void sound.load();
   });
@@ -47,7 +50,7 @@
   }
 
   $effect(() => {
-    if (disabled || !pickerMix) pickerId = null;
+    if (manageOff || !pickerMix) pickerId = null;
   });
 
   $effect(() => {
@@ -221,7 +224,12 @@
           {:else if deletingId === m.id}
             <div class="confirm">
               <p class="ask">Delete {m.name}?</p>
-              <button type="button" class="btn" {disabled} onclick={() => confirmDelete(m.id)}>
+              <button
+                type="button"
+                class="btn"
+                disabled={manageOff}
+                onclick={() => confirmDelete(m.id)}
+              >
                 Delete
               </button>
               <button type="button" class="btn cancel-delete" onclick={() => cancelDelete(m.id)}>
@@ -247,7 +255,7 @@
                 aria-label={`Backgrounds for ${m.name}`}
                 aria-haspopup="true"
                 aria-expanded={pickerId === m.id}
-                {disabled}
+                disabled={manageOff}
                 onclick={() => togglePicker(m.id)}
               >
                 <svg
@@ -273,7 +281,7 @@
               type="button"
               class="icon"
               aria-label={`Rename ${m.name}`}
-              {disabled}
+              disabled={manageOff}
               onclick={() => startRename(m.id, m.name)}
             >
               <span class="pencil" aria-hidden="true"></span>
@@ -283,7 +291,7 @@
               class="icon del"
               aria-label={`Delete ${m.name}`}
               data-del={m.id}
-              {disabled}
+              disabled={manageOff}
               onclick={() => askDelete(m.id)}
             >
               <span class="cross" aria-hidden="true"></span>

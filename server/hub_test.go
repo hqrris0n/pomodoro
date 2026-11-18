@@ -837,3 +837,124 @@ func TestHostLeavingIdleRoomStillPromotes(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func mixOf(id, name string, v float64) SavedMix {
+	return SavedMix{ID: id, Name: name, Mix: map[string]float64{"rain": v}}
+}
+
+func settingsWithMixes(ms ...SavedMix) *Settings {
+	s := testSettings()
+	s.Mixes = ms
+	return &s
+}
+
+func TestValidateMixes(t *testing.T) {
+	ok := func(ms []SavedMix) error { _, err := validateSettings(*settingsWithMixes(ms...)); return err }
+	if err := ok([]SavedMix{mixOf("a", "A", 0.5)}); err != nil {
+		t.Fatal(err)
+	}
+	many := make([]SavedMix, 41)
+	for i := range many {
+		many[i] = mixOf(fmt.Sprint("m", i), "x", 0.1)
+	}
+	bad := map[string][]SavedMix{
+		"41 mixes":   many,
+		"empty id":   {mixOf("", "A", 0.5)},
+		"long id":    {mixOf(strings.Repeat("i", 41), "A", 0.5)},
+		"dup id":     {mixOf("a", "A", 0.5), mixOf("a", "B", 0.5)},
+		"empty name": {mixOf("a", "", 0.5)},
+		"long name":  {mixOf("a", strings.Repeat("n", 31), 0.5)},
+		"volume":     {mixOf("a", "A", 1.5)},
+		"too many keys": {{ID: "a", Name: "A", Mix: func() map[string]float64 {
+			m := map[string]float64{}
+			for i := 0; i < 17; i++ {
+				m[fmt.Sprint("c", i)] = 0.1
+			}
+			return m
+		}()}},
+	}
+	for name, ms := range bad {
+		wantStatus(t, ok(ms), 400)
+		_ = name
+	}
+	if err := ok(many[:40]); err != nil {
+		t.Fatalf("40 mixes: %v", err)
+	}
+}
+
+func TestMixesInRoom(t *testing.T) {
+	h, _ := newTestHub()
+	host, co, guest := tok(1), tok(2), tok(3)
+	base := mixOf("a", "Alpha", 0.5)
+	r, err := h.CreateRoom(host, "Ada", *settingsWithMixes(base), testTimer(h, false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustJoin(t, h, co, r.ID, "Bo")
+	mustJoin(t, h, guest, r.ID, "Cy")
+	if _, err := h.SetRole(host, r.ID, memberID(co), roleCohost); err != nil {
+		t.Fatal(err)
+	}
+	patch := func(token string, ms ...SavedMix) (Room, error) {
+		s := settingsWithMixes(ms...)
+		v, err := validateSettings(*s)
+		if err != nil {
+			return Room{}, err
+		}
+		return h.Patch(token, r.ID, &v, nil, false)
+	}
+	extra := mixOf("b", "Study", 0.3)
+
+	// A co-host may append, and only append.
+	got, err := patch(co, base, extra)
+	if err != nil || len(got.Settings.Mixes) != 2 {
+		t.Fatalf("append: %v %+v", err, got.Settings.Mixes)
+	}
+	for name, ms := range map[string][]SavedMix{
+		"remove":  {extra},
+		"rename":  {mixOf("a", "Renamed", 0.5), extra},
+		"change":  {mixOf("a", "Alpha", 0.9), extra},
+		"reorder": {extra, base},
+		"empty":   {},
+	} {
+		if _, err := patch(co, ms...); err == nil {
+			t.Fatalf("%s accepted", name)
+		} else {
+			wantStatus(t, err, 403)
+		}
+	}
+	_, err = patch(guest, base, extra)
+	wantStatus(t, err, 403)
+	if cur, _ := h.room(r.ID); len(cur.Settings.Mixes) != 2 {
+		t.Fatalf("rejected patches changed the list: %+v", cur.Settings.Mixes)
+	}
+
+	// A patch without mixes keeps the list, for the host and a co-host.
+	noMixes := testSettings()
+	noMixes.DrinkID = "mocha"
+	for _, token := range []string{co, host} {
+		got, err = h.Patch(token, r.ID, &noMixes, nil, false)
+		if err != nil || got.Settings.DrinkID != "mocha" || len(got.Settings.Mixes) != 2 {
+			t.Fatalf("no mixes: %v %+v", err, got.Settings)
+		}
+	}
+
+	// The host edits freely.
+	got, err = patch(host, mixOf("a", "Renamed", 0.2))
+	if err != nil || len(got.Settings.Mixes) != 1 || got.Settings.Mixes[0].Name != "Renamed" {
+		t.Fatalf("host edit: %v %+v", err, got.Settings.Mixes)
+	}
+	got, err = patch(host, []SavedMix{}...)
+	if err != nil || got.Settings.Mixes == nil || len(got.Settings.Mixes) != 0 {
+		t.Fatalf("host clear: %v %#v", err, got.Settings.Mixes)
+	}
+}
+
+func TestRoomViewMixesNeverNull(t *testing.T) {
+	h, _ := newTestHub()
+	r := mustCreate(t, h, tok(1), "Ada")
+	raw, _ := json.Marshal(r)
+	if !strings.Contains(string(raw), `"mixes":[]`) {
+		t.Fatalf("view = %s", raw)
+	}
+}

@@ -6,7 +6,7 @@ import { DrinkStore } from '../drinks/drinks.svelte';
 import { Identity } from '../shell/identity.svelte';
 import { load } from '../storage';
 import { TimerEngine } from '../timer/engine.svelte';
-import type { Drink, Settings, TimerState } from '../types';
+import type { Drink, SavedMix, Settings, TimerState } from '../types';
 import { ApiError, type Member, type Room, type RoomsApi } from './api';
 import { RoomsStore } from './rooms.svelte';
 
@@ -172,9 +172,15 @@ describe('publishing my timer', () => {
         backgroundId: 'rainy-window',
         backgroundRotateMin: 5,
         mix: { hum: 0.3 },
+        mixes: h.sound.ownMixes,
       },
       timer: h.timer.state,
     });
+    expect(h.sound.ownMixes.map((m) => m.name)).toEqual([
+      'Quiet morning',
+      'Busy café',
+      'Rainy day',
+    ]);
     expect(h.rooms.role).toBe('host');
   });
 
@@ -654,5 +660,136 @@ describe('between timers', () => {
     });
     h.es().emit('rooms', { now: Date.now(), rooms: [summary('a', TIMER), summary('b', null)] });
     expect(h.rooms.list.map((r) => r.id)).toEqual(['a']);
+  });
+});
+
+describe("sharing the host's saved mixes", () => {
+  const SHARED: SavedMix[] = [
+    { id: 'builtin:rainy-day', name: 'Rainy day', mix: { rain: 0.7 } },
+    { id: 'h1', name: 'Host mix', mix: { hum: 0.4 } },
+  ];
+  const view = (role: 'guest' | 'cohost' | 'host', mixes = SHARED) =>
+    mkRoom({
+      id: 'other',
+      settings: { ...SETTINGS, mixes },
+      members:
+        role === 'host'
+          ? [member('me', 'host', 1)]
+          : [member('o', 'host', 1), member('me', role, 2)],
+    });
+  const emitView = (room: Room) => {
+    h.es().emit('room', { now: Date.now(), you: 'me', room });
+    flushSync();
+  };
+  const patchedSettings = (n: number) =>
+    ((h.api.patchRoom.mock.calls[n] as unknown[])[2] as { settings: Settings }).settings;
+
+  it("shows the host's list to a guest and brings my own back on leaving", async () => {
+    const own = load('mixes', null);
+    await h.connect();
+    await h.rooms.join('other');
+    emitView(view('guest'));
+    expect(h.sound.saved.map((m) => m.name)).toEqual(['Rainy day', 'Host mix']);
+    expect(h.sound.roomAppend).toBeNull();
+    expect(load('mixes', null)).toEqual(own);
+    await h.rooms.leave();
+    expect(h.sound.roomMixes).toBeNull();
+    expect(h.sound.saved.map((m) => m.name)).toEqual(['Quiet morning', 'Busy café', 'Rainy day']);
+    expect(load('mixes', null)).toEqual(own);
+  });
+
+  it("restores my list when the room disappears, and keeps a co-host's settings patches free of mixes", async () => {
+    await h.connect();
+    await h.rooms.join('other');
+    emitView(view('cohost'));
+    h.drinks.select('tea');
+    flushSync();
+    await vi.advanceTimersByTimeAsync(300);
+    expect(patchedSettings(0).drinkId).toBe('tea');
+    expect(patchedSettings(0).mixes).toBeUndefined();
+    h.es().emit('room', { now: Date.now(), you: 'me', room: null });
+    await h.settle();
+    expect(h.sound.roomMixes).toBeNull();
+    expect(h.sound.saved).toHaveLength(3);
+  });
+
+  it("sends a co-host's new mix as an append and leaves their own list alone", async () => {
+    const own = load('mixes', null);
+    await h.connect();
+    await h.rooms.join('other');
+    emitView(view('cohost'));
+    h.sound.applyMix({ chatter: 0.6 });
+    expect(h.sound.saveCurrent('Study')).toBeNull();
+    expect(h.api.patchRoom).toHaveBeenCalledOnce();
+    const sent = patchedSettings(0).mixes!;
+    expect(sent.slice(0, 2)).toEqual(SHARED);
+    expect(sent).toHaveLength(3);
+    expect(sent[2]).toMatchObject({ name: 'Study', mix: { chatter: 0.6 } });
+    expect(h.sound.saved.map((m) => m.name)).toEqual(['Rainy day', 'Host mix', 'Study']);
+    expect(load('mixes', null)).toEqual(own);
+    expect(h.sound.saveCurrent('study')).toBe('Another mix already has that name.');
+    expect(h.api.patchRoom).toHaveBeenCalledOnce();
+  });
+
+  it('undoes a co-host save the room refuses', async () => {
+    await h.connect();
+    await h.rooms.join('other');
+    emitView(view('cohost'));
+    h.sound.applyMix({ chatter: 0.6 });
+    h.api.patchRoom.mockRejectedValueOnce(new ApiError(403, 'nope'));
+    h.sound.saveCurrent('Study');
+    await h.settle();
+    expect(h.sound.saved.map((m) => m.name)).toEqual(['Rainy day', 'Host mix']);
+    expect(h.rooms.error).toBe('nope');
+  });
+
+  it('a host adds mixes new in a room view to their own list and never deletes', async () => {
+    await h.asHost();
+    const added = { id: 'c1', name: 'Co-host mix', mix: { rain: 0.2 } };
+    const before = h.sound.ownMixes;
+    emitView(mkRoom({ settings: { ...SETTINGS, mixes: [...before, added] } }));
+    expect(h.sound.ownMixes.map((m) => m.id)).toEqual([...before.map((m) => m.id), 'c1']);
+    expect(load<{ id: string }[]>('mixes', [])!.map((m) => m.id)).toContain('c1');
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(h.api.patchRoom).not.toHaveBeenCalled();
+
+    // A view without some of my mixes does not delete them.
+    emitView(mkRoom({ settings: { ...SETTINGS, mixes: [] } }));
+    expect(h.sound.ownMixes).toHaveLength(before.length + 1);
+
+    // A mix I deleted is not brought back by a stale view, and the deletion is sent.
+    h.sound.deleteSaved('c1');
+    emitView(mkRoom({ settings: { ...SETTINGS, mixes: [...before, added] } }));
+    expect(h.sound.ownMixes.map((m) => m.id)).not.toContain('c1');
+    await vi.advanceTimersByTimeAsync(300);
+    expect(patchedSettings(0).mixes!.map((m) => m.id)).not.toContain('c1');
+  });
+
+  it("publishes the host's list again when it changes", async () => {
+    await h.asHost();
+    h.sound.saveCurrent('Mine');
+    flushSync();
+    await vi.advanceTimersByTimeAsync(300);
+    expect(h.api.patchRoom).toHaveBeenCalledOnce();
+    expect(patchedSettings(0).mixes!.map((m) => m.name)).toEqual([
+      'Quiet morning',
+      'Busy café',
+      'Rainy day',
+      'Mine',
+    ]);
+  });
+
+  it('a promoted co-host adopts the room list and sees their own list again', async () => {
+    await h.connect();
+    await h.rooms.join('other');
+    emitView(view('cohost'));
+    emitView(view('host'));
+    expect(h.sound.roomMixes).toBeNull();
+    expect(h.sound.saved.map((m) => m.name)).toEqual([
+      'Quiet morning',
+      'Busy café',
+      'Rainy day',
+      'Host mix',
+    ]);
   });
 });

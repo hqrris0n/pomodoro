@@ -9,6 +9,7 @@ import { sound } from './mixes.svelte';
 export function installMixLinks(): () => void {
   return backgrounds.onChoose((id) => {
     const mixId = sound.links[id];
-    if (mixId) sound.loadSaved(mixId);
+    // In a room the list is the host's and links are per device, so none apply.
+    if (mixId && sound.roomMixes === null) sound.loadSaved(mixId);
   });
 }

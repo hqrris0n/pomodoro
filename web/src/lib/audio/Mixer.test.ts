@@ -28,6 +28,7 @@ function resetStore() {
   sound.master = 0.8;
   sound.enabled = false;
   sound.links = {};
+  sound.setRoomMixes(null);
 }
 
 async function setup(props: { disabled?: boolean; lockedNote?: string } = {}, fetchOk = true) {
@@ -217,6 +218,24 @@ describe('Mixer', () => {
     for (const c of controls) expect(c).toBeDisabled();
     await fireEvent.click(sw);
     expect(sound.enabled).toBe(true);
+  });
+
+  it("lets a co-host in a room save but not rename, delete or relink the host's mixes", async () => {
+    const append = vi.fn();
+    sound.setRoomMixes([{ id: 'h1', name: 'Host mix', mix: { rain: 0.5 } }]);
+    sound.roomAppend = append;
+    await setup();
+    expect(screen.getByRole('button', { name: 'Host mix' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Rename Host mix' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Delete Host mix' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Backgrounds for Host mix' })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: 'Quiet morning' })).toBeNull();
+    await setSlider('Rain', 30);
+    const field = screen.getByRole('textbox', { name: 'Mix name' });
+    expect(field).toBeEnabled();
+    await fireEvent.input(field, { target: { value: 'Study' } });
+    await fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(append).toHaveBeenCalledWith(expect.objectContaining({ name: 'Study' }));
   });
 
   it('shows the store error when the channel list fails to load', async () => {

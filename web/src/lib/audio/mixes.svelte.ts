@@ -1,9 +1,9 @@
 import { load, save } from '../storage';
-import type { Mix, SoundChannel } from '../types';
+import type { Mix, SavedMix, SoundChannel } from '../types';
 import { scenes } from '../backgrounds/registry';
 import { AudioEngine } from './engine';
 
-export type SavedMix = { id: string; name: string; mix: Mix };
+export type { SavedMix };
 
 type EngineLike = Pick<
   AudioEngine,
@@ -14,6 +14,9 @@ type EngineLike = Pick<
 type SoundPrefs = { mix: Mix; levels: Mix; master: number; enabled: boolean; muted?: boolean };
 
 const MAX_NAME = 30;
+/** Most mixes a room's list may hold (the server enforces the same limits). */
+export const MAX_ROOM_MIXES = 40;
+const MAX_ID = 40;
 const DEFAULT_LEVEL = 0.5;
 
 /** Seeded once into a user's saved mixes; after that they are ordinary mixes. */
@@ -70,7 +73,15 @@ export class SoundStore {
   /** backgroundId -> mixId: the mix that starts when that background is chosen. */
   links = $state<Record<string, string>>({});
 
-  saved = $derived<SavedMix[]>(this.userMixes);
+  /**
+   * The host's list while I am a guest or co-host in a room, else null. It
+   * replaces my own list in the mixer without touching my stored mixes or links.
+   */
+  roomMixes = $state.raw<SavedMix[] | null>(null);
+  /** Set by the rooms store while I am a co-host: sends a new mix to the room's list. */
+  roomAppend: ((mix: SavedMix) => void) | null = null;
+
+  saved = $derived<SavedMix[]>(this.roomMixes ?? this.userMixes);
   activeSavedId = $derived<string | null>(
     this.saved.find((s) => sameMix(s.mix, this.mix))?.id ?? null,
   );
@@ -193,11 +204,58 @@ export class SoundStore {
     this.commit();
   }
 
+  /** My own list in the form a room accepts: valid entries only, at most MAX_ROOM_MIXES. */
+  get ownMixes(): SavedMix[] {
+    return $state
+      .snapshot(this.userMixes)
+      .filter((m) => m.id.length <= MAX_ID && m.name.length <= MAX_NAME)
+      .slice(0, MAX_ROOM_MIXES);
+  }
+
+  /** Show `list` instead of my own mixes (null: back to my own). Nothing is stored. */
+  setRoomMixes(list: SavedMix[] | null): void {
+    this.roomMixes = list === null ? null : list.map((m) => ({ ...m, mix: { ...m.mix } }));
+    if (list === null) this.roomAppend = null;
+  }
+
+  /**
+   * Add mixes from a room I host to my own list: only ids I do not have. A name
+   * that is already taken gets a " (2)" style suffix. Never deletes or edits.
+   */
+  adoptMixes(list: SavedMix[]): void {
+    let added = false;
+    for (const m of list) {
+      if (this.userMixes.some((u) => u.id === m.id)) continue;
+      let name = m.name;
+      for (
+        let i = 2;
+        this.userMixes.some((u) => u.name.toLowerCase() === name.toLowerCase());
+        i++
+      ) {
+        const suffix = ` (${i})`;
+        name = m.name.slice(0, MAX_NAME - suffix.length) + suffix;
+      }
+      this.userMixes.push({ id: m.id, name, mix: cleanMix(m.mix) });
+      added = true;
+    }
+    if (added) this.persistMixes();
+  }
+
   saveCurrent(name: string): string | null {
     const n = name.trim();
     const err = this.validateName(n);
     if (err) return err;
     const snapshot = cleanMix($state.snapshot(this.mix));
+    if (this.roomMixes !== null) {
+      // In someone's room only a co-host may save, and the mix goes to the host's list.
+      if (!this.roomAppend) return 'Only the host or a co-host can save mixes.';
+      if (this.roomMixes.some((m) => m.name.toLowerCase() === n.toLowerCase())) {
+        return 'Another mix already has that name.';
+      }
+      if (this.roomMixes.length >= MAX_ROOM_MIXES) return "The host's list is full.";
+      this.roomAppend({ id: newId(), name: n, mix: snapshot });
+      return null;
+    }
     const existing = this.userMixes.find((m) => m.name.toLowerCase() === n.toLowerCase());
     if (existing) {
       existing.name = n;
@@ -223,6 +281,7 @@ export class SoundStore {
 
   /** on: make mixId the mix for backgroundId (replacing any other). off: unlink if it points at mixId. */
   setLink(backgroundId: string, mixId: string, on: boolean): void {
+    if (this.roomMixes !== null) return;
     if (on) {
       if (!scenes.some((s) => s.id === backgroundId)) return;
       if (!this.saved.some((m) => m.id === mixId)) return;
@@ -246,6 +305,7 @@ export class SoundStore {
 
   /** Returns an error message, or null on success. No-op (null) on unknown ids. */
   renameSaved(id: string, name: string): string | null {
+    if (this.roomMixes !== null) return "Only the host can change the host's mixes.";
     const target = this.userMixes.find((m) => m.id === id);
     if (!target) return null;
     const n = name.trim();
@@ -261,6 +321,7 @@ export class SoundStore {
   }
 
   deleteSaved(id: string): void {
+    if (this.roomMixes !== null) return;
     const i = this.userMixes.findIndex((m) => m.id === id);
     if (i < 0) return;
     this.userMixes.splice(i, 1);

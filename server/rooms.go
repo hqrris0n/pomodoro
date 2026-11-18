@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"reflect"
 	"sort"
 	"sync"
 	"time"
@@ -36,16 +37,17 @@ type apiError struct {
 func (e *apiError) Error() string { return e.msg }
 
 var (
-	errNoRoom      = &apiError{404, "no such room"}
-	errNotMember   = &apiError{403, "not a member of that room"}
-	errNotOwner    = &apiError{403, "only a host or co-host can do that"}
-	errNotHost     = &apiError{403, "only the host can do that"}
-	errNoMember    = &apiError{404, "no such member"}
-	errRoomsFull   = &apiError{429, "too many rooms"}
-	errRoomFull    = &apiError{429, "room is full"}
-	errRateLimited = &apiError{429, "too many requests"}
-	errBusy        = &apiError{429, "server is busy"}
-	errNoteRate    = &apiError{429, "too many sticky notes, wait a minute"}
+	errNoRoom          = &apiError{404, "no such room"}
+	errNotMember       = &apiError{403, "not a member of that room"}
+	errNotOwner        = &apiError{403, "only a host or co-host can do that"}
+	errMixesAppendOnly = &apiError{403, "co-hosts can only add mixes to the host's list"}
+	errNotHost         = &apiError{403, "only the host can do that"}
+	errNoMember        = &apiError{404, "no such member"}
+	errRoomsFull       = &apiError{429, "too many rooms"}
+	errRoomFull        = &apiError{429, "room is full"}
+	errRateLimited     = &apiError{429, "too many requests"}
+	errBusy            = &apiError{429, "server is busy"}
+	errNoteRate        = &apiError{429, "too many sticky notes, wait a minute"}
 )
 
 // hub owns all state behind one mutex. Every exported method locks it, mutates,
@@ -457,6 +459,9 @@ func (h *hub) CreateRoom(token, name string, s Settings, t Timer) (Room, error) 
 	}
 	h.leaveLocked(c)
 	h.nextSeq++
+	if s.Mixes == nil {
+		s.Mixes = []SavedMix{}
+	}
 	r := &room{id: h.newRoomID(), seq: h.nextSeq, settings: s, timer: &t, timerRev: 1, setAt: h.now()}
 	r.members = []*member{{c: c, name: name, role: roleHost, joinedAt: h.nowMs()}}
 	h.rooms[r.id] = r
@@ -533,6 +538,13 @@ func (h *hub) Patch(token, roomID string, s *Settings, t *Timer, clearTimer bool
 		return Room{}, errNotHost
 	}
 	if s != nil {
+		if s.Mixes == nil {
+			v := *s
+			v.Mixes = r.settings.Mixes
+			s = &v
+		} else if me.role != roleHost && !onlyAppends(r.settings.Mixes, s.Mixes) {
+			return Room{}, errMixesAppendOnly
+		}
 		r.settings = *s
 	}
 	if t != nil || clearTimer {
@@ -548,6 +560,20 @@ func (h *hub) Patch(token, roomID string, s *Settings, t *Timer, clearTimer bool
 	h.touchAll(r)
 	h.publish()
 	return r.view(), nil
+}
+
+// onlyAppends reports whether next is old with zero or more mixes added at the
+// end: nothing removed, renamed, changed or reordered.
+func onlyAppends(old, next []SavedMix) bool {
+	if len(next) < len(old) {
+		return false
+	}
+	for i, m := range old {
+		if !reflect.DeepEqual(m, next[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 // SetRole makes another member a co-host or a guest; the host only. The host's

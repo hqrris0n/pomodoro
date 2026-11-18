@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -469,5 +470,30 @@ func TestNotesOverHTTP(t *testing.T) {
 	e.clk.Advance(61 * time.Second)
 	if s := send(tok(1), to, "n"); s != 202 {
 		t.Fatalf("after window: %d", s)
+	}
+}
+
+func TestRoomBodiesMayCarryFullMixList(t *testing.T) {
+	e := newEnv(t)
+	mixes := make([]map[string]any, 40)
+	for i := range mixes {
+		mixes[i] = map[string]any{"id": fmt.Sprintf("%030d-%d", i, i), "name": strings.Repeat("n", 30),
+			"mix": map[string]any{"rain": 0.5, "hum": 0.5, "dishes": 0.5, "chatter": 0.5, "espresso": 0.5, "fireplace": 0.5}}
+	}
+	body := createBody(func(m map[string]any) { sub(m, "settings")["mixes"] = mixes })
+	if raw, _ := json.Marshal(body); len(raw) <= 4<<10 {
+		t.Fatalf("test body is only %d bytes", len(raw))
+	}
+	status, out := e.do(t, "POST", "/api/rooms", tok(1), body)
+	if status != 200 {
+		t.Fatalf("create: %d %s", status, out)
+	}
+	var room Room
+	if err := json.Unmarshal([]byte(out), &room); err != nil {
+		t.Fatal(err)
+	}
+	status, out = e.do(t, "PATCH", "/api/rooms/"+room.ID, tok(1), map[string]any{"settings": sub(body, "settings")})
+	if status != 200 {
+		t.Fatalf("patch: %d %s", status, out)
 	}
 }

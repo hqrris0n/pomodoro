@@ -44,6 +44,9 @@ export type SoundChannel = {
 /** Channel id -> volume 0..1. A missing or zero entry means the channel is off. */
 export type Mix = Record<string, number>;
 
+/** A saved sound mix: a named channel mix. */
+export type SavedMix = { id: string; name: string; mix: Mix };
+
 /** Everything a room shares besides the timer. */
 export type Settings = {
   drinkId: string;
@@ -51,4 +54,9 @@ export type Settings = {
   /** Minutes between automatic background changes; 0 = off. */
   backgroundRotateMin: number;
   mix: Mix;
+  /**
+   * The host's saved mixes. Rooms always carry it; a patch that leaves it out
+   * keeps the room's list.
+   */
+  mixes?: SavedMix[];
 };

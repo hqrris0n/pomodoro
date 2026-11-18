@@ -22,6 +22,16 @@ type Settings struct {
 	BackgroundID        string             `json:"backgroundId"`
 	BackgroundRotateMin int                `json:"backgroundRotateMin"`
 	Mix                 map[string]float64 `json:"mix"`
+	// Mixes is the host's saved sound mixes. nil (absent in a request) means
+	// "keep the room's list"; views always carry a non-nil list.
+	Mixes []SavedMix `json:"mixes"`
+}
+
+// SavedMix is one entry of the host's saved list.
+type SavedMix struct {
+	ID   string             `json:"id"`
+	Name string             `json:"name"`
+	Mix  map[string]float64 `json:"mix"`
 }
 
 type Member struct {
@@ -72,6 +82,11 @@ const (
 	maxIDLen   = 32
 	maxMixKeys = 16
 	maxNameLen = 24
+
+	maxSavedMixes  = 40
+	maxMixIDLen    = 40
+	maxMixNameLen  = 30
+	maxSettingsLen = 32 << 10 // request body for create and patch, which may carry mixes
 )
 
 // timerIn is what a client sends. AnchorAt is a float so that any JSON number
@@ -114,7 +129,8 @@ func validateTimer(in timerIn, nowMs int64) (Timer, error) {
 	return t, nil
 }
 
-// validateSettings checks sizes and returns a copy with a non-nil mix.
+// validateSettings checks sizes and returns a copy with a non-nil mix (and
+// non-nil mixes when the request had them).
 func validateSettings(in Settings) (Settings, error) {
 	if utf8.RuneCountInString(in.DrinkID) > maxIDLen || utf8.RuneCountInString(in.BackgroundID) > maxIDLen {
 		return Settings{}, badRequest("drinkId and backgroundId must be at most 32 characters")
@@ -122,18 +138,49 @@ func validateSettings(in Settings) (Settings, error) {
 	if r := in.BackgroundRotateMin; r != 0 && (r < 1 || r > 120) {
 		return Settings{}, badRequest("backgroundRotateMin must be 0 or 1 to 120")
 	}
-	if len(in.Mix) > maxMixKeys {
-		return Settings{}, badRequest("mix may have at most 16 channels")
+	mix, err := validateMix(in.Mix)
+	if err != nil {
+		return Settings{}, err
 	}
-	mix := make(map[string]float64, len(in.Mix))
-	for k, v := range in.Mix {
+	in.Mix = mix
+	if in.Mixes != nil {
+		if len(in.Mixes) > maxSavedMixes {
+			return Settings{}, badRequest("mixes may have at most 40 entries")
+		}
+		seen := make(map[string]bool, len(in.Mixes))
+		out := make([]SavedMix, 0, len(in.Mixes))
+		for _, m := range in.Mixes {
+			if n := utf8.RuneCountInString(m.ID); n < 1 || n > maxMixIDLen || seen[m.ID] {
+				return Settings{}, badRequest("mix ids must be unique and 1 to 40 characters")
+			}
+			seen[m.ID] = true
+			if n := utf8.RuneCountInString(m.Name); n < 1 || n > maxMixNameLen {
+				return Settings{}, badRequest("mix names must be 1 to 30 characters")
+			}
+			mm, err := validateMix(m.Mix)
+			if err != nil {
+				return Settings{}, err
+			}
+			out = append(out, SavedMix{ID: m.ID, Name: m.Name, Mix: mm})
+		}
+		in.Mixes = out
+	}
+	return in, nil
+}
+
+// validateMix checks one channel mix and returns a non-nil copy.
+func validateMix(in map[string]float64) (map[string]float64, error) {
+	if len(in) > maxMixKeys {
+		return nil, badRequest("mix may have at most 16 channels")
+	}
+	mix := make(map[string]float64, len(in))
+	for k, v := range in {
 		if utf8.RuneCountInString(k) > maxIDLen || !(v >= 0 && v <= 1) {
-			return Settings{}, badRequest("mix channels need short ids and volumes from 0 to 1")
+			return nil, badRequest("mix channels need short ids and volumes from 0 to 1")
 		}
 		mix[k] = v
 	}
-	in.Mix = mix
-	return in, nil
+	return mix, nil
 }
 
 // validateName trims and checks a display name (1-24 characters).
