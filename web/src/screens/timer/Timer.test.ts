@@ -209,4 +209,11 @@ describe('Timer screen', () => {
     await fireEvent.keyDown(window, { key: 'Escape' });
     expect(bar).toHaveAttribute('aria-expanded', 'false');
   });
+
+  it('keeps the Order for card off the timer screen', async () => {
+    timer.apply(stateOf());
+    await mountTimer();
+    expect(screen.queryByLabelText('Username')).toBeNull();
+    expect(screen.queryByText('Order for:')).toBeNull();
+  });
 });

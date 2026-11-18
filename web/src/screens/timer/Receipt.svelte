@@ -1,7 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { sound } from '../../lib/audio/mixes.svelte';
-  import OrderFor from '../../lib/profiles/OrderFor.svelte';
   import { load, save } from '../../lib/storage';
   import TodoList from '../../lib/todos/TodoList.svelte';
   import { todos } from '../../lib/todos/todos.svelte';
@@ -79,7 +78,6 @@
     </svg>
   </button>
   <div class="body" id="receipt-body">
-    <OrderFor />
     <TodoList />
   </div>
 </aside>

@@ -46,8 +46,67 @@
 </script>
 
 <div class="order-for">
+  <!-- Inner wire: behind the card, in front of the ticket. -->
   <svg
-    class="clip"
+    class="clip back"
+    viewBox="0 0 7 19"
+    width="21"
+    height="57"
+    shape-rendering="crispEdges"
+    aria-hidden="true"
+  >
+    <rect x="4" y="5" width="1" height="13" />
+    <rect x="2" y="4" width="2" height="1" />
+    <rect x="2" y="5" width="1" height="9" />
+  </svg>
+  <div class="card">
+    <label for="order-for-user">Order for:</label>
+    <input
+      bind:this={userInput}
+      bind:value={userDraft}
+      id="order-for-user"
+      type="text"
+      placeholder="username"
+      aria-label="Username"
+      maxlength="24"
+      autocomplete="username"
+      autocapitalize="off"
+      spellcheck="false"
+      disabled={profiles.busy}
+      aria-invalid={userError !== null}
+      aria-describedby={userError ? 'order-for-user-error' : undefined}
+      onblur={commitUser}
+      onkeydown={blurOnEnter}
+    />
+    {#if userError}
+      <p id="order-for-user-error" class="error" role="alert">{userError}</p>
+    {:else if profiles.notice}
+      <p class="error" role="status">{profiles.notice}</p>
+    {/if}
+
+    <input
+      bind:this={nameInput}
+      bind:value={nameDraft}
+      type="text"
+      placeholder="display name"
+      aria-label="Display name"
+      maxlength="24"
+      autocomplete="off"
+      aria-invalid={nameError}
+      aria-describedby={nameError ? 'order-for-name-error' : undefined}
+      onblur={commitName}
+      onkeydown={blurOnEnter}
+    />
+    {#if nameError}
+      <p id="order-for-name-error" class="error" role="alert">Enter a name.</p>
+    {/if}
+    {#if profiles.status === 'waiting'}
+      <p class="note" role="status">Your settings switch over when this timer ends.</p>
+    {/if}
+  </div>
+  <!-- Outer wire: in front of the card. -->
+  <svg
+    class="clip front"
     viewBox="0 0 7 19"
     width="21"
     height="57"
@@ -58,81 +117,49 @@
     <rect x="0" y="1" width="1" height="17" />
     <rect x="6" y="1" width="1" height="11" />
     <rect x="1" y="18" width="3" height="1" />
-    <rect x="4" y="5" width="1" height="13" />
-    <rect x="2" y="4" width="2" height="1" />
-    <rect x="2" y="5" width="1" height="9" />
     <rect class="shine" x="0" y="3" width="1" height="4" />
   </svg>
-
-  <label for="order-for-user">Order for:</label>
-  <input
-    bind:this={userInput}
-    bind:value={userDraft}
-    id="order-for-user"
-    type="text"
-    placeholder="username"
-    aria-label="Username"
-    maxlength="24"
-    autocomplete="username"
-    autocapitalize="off"
-    spellcheck="false"
-    disabled={profiles.busy}
-    aria-invalid={userError !== null}
-    aria-describedby={userError ? 'order-for-user-error' : undefined}
-    onblur={commitUser}
-    onkeydown={blurOnEnter}
-  />
-  {#if userError}
-    <p id="order-for-user-error" class="error" role="alert">{userError}</p>
-  {:else if profiles.notice}
-    <p class="error" role="status">{profiles.notice}</p>
-  {/if}
-
-  <input
-    bind:this={nameInput}
-    bind:value={nameDraft}
-    type="text"
-    placeholder="display name"
-    aria-label="Display name"
-    maxlength="24"
-    autocomplete="off"
-    aria-invalid={nameError}
-    aria-describedby={nameError ? 'order-for-name-error' : undefined}
-    onblur={commitName}
-    onkeydown={blurOnEnter}
-  />
-  {#if nameError}
-    <p id="order-for-name-error" class="error" role="alert">Enter a name.</p>
-  {/if}
-  {#if profiles.status === 'waiting'}
-    <p class="note" role="status">Your settings switch over when this timer ends.</p>
-  {/if}
 </div>
 
 <style>
   .order-for {
     position: relative;
-    display: flex;
-    flex-direction: column;
-    gap: var(--s1);
-    width: min(100%, 288px);
-    margin: var(--s4) 0 var(--s3) var(--s1);
-    padding: var(--s3) var(--s2) var(--s2);
-    background: var(--foam);
-    border: var(--border);
-    box-shadow: var(--shadow);
+    width: var(--order-for-w, 216px);
+    max-width: 100%;
     color: var(--ink);
     transform: rotate(-1.5deg);
   }
 
-  /* The clip sits over the card's top edge, leaning right. */
+  .card {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    flex-direction: column;
+    gap: var(--s1);
+    padding: var(--s3) var(--s2) var(--s2);
+    background: var(--foam);
+    border: var(--border);
+    box-shadow: var(--shadow);
+  }
+
+  /* Clipped to the corner of the ticket: sits on the card's left half, pokes above it,
+     and leans the other way from the card. The inner wire is drawn behind the card
+     (.back), the outer wire in front of it (.front), so it appears to hold both papers. */
   .clip {
     position: absolute;
-    top: calc(var(--s4) * -1);
-    right: var(--s4);
+    top: calc(var(--px) * -9);
+    left: var(--s3);
     fill: var(--dusk);
-    transform: rotate(18deg);
-    transform-origin: 50% 0;
+    transform: rotate(16deg);
+    transform-origin: 50% calc(var(--px) * 9);
+  }
+
+  .clip.back {
+    z-index: 0;
+  }
+
+  .clip.front {
+    z-index: 2;
   }
 
   .clip .shine {

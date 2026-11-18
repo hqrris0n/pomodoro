@@ -22,7 +22,10 @@
   <span class="hole right" aria-hidden="true"></span>
 
   <div class="order">
-    <h1>Your order</h1>
+    <div class="head">
+      <h1>Your order</h1>
+      <OrderFor />
+    </div>
     <DurationField {order} />
     <RoundsField {order} />
     <DrinkPicker />
@@ -32,7 +35,6 @@
   <div class="tear" aria-hidden="true"></div>
 
   <div class="receipt">
-    <OrderFor />
     <TodoList />
   </div>
 </main>
@@ -44,6 +46,7 @@
 <style>
   .ticket {
     position: relative;
+    --order-for-w: 216px;
     margin: var(--s6) var(--s2) var(--s6);
     padding: 0;
   }
@@ -61,8 +64,9 @@
     left: var(--s2);
   }
 
+  /* The Order for card covers the top-right corner, so this hole sits just left of it. */
   .hole.right {
-    right: var(--s2);
+    right: calc(var(--order-for-w) + var(--s3));
   }
 
   .order {
@@ -73,7 +77,19 @@
     text-align: left;
   }
 
+  /* The Order for card clips to the ticket's top-right corner; the heading wraps beside it. */
+  .head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--s2);
+    margin: calc(-1 * (var(--s5) + var(--s1))) calc(-1 * (var(--s3) + var(--s1))) 0 0;
+  }
+
   h1 {
+    flex: 1;
+    min-width: 0;
+    margin-top: calc(var(--s5) + var(--s1));
     font-size: var(--t4);
   }
 
