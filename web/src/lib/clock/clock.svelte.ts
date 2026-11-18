@@ -1,4 +1,3 @@
-import { SvelteDate } from 'svelte/reactivity';
 import { load, save } from '../storage';
 
 export type ClockFormat = '12' | '24';
@@ -24,7 +23,16 @@ export function localDatetime(date: Date): string {
 export class ClockStore {
   #show = $state(false);
   #format = $state<ClockFormat>('12');
-  now = new SvelteDate();
+  // A plain number, not a SvelteDate: this store outlives the components that
+  // read it, and SvelteDate's per-getter deriveds go stale when the component
+  // that first read them (the Setup screen's clock) is destroyed.
+  #nowMs = $state(Date.now());
+
+  /** The browser's current time; formatted in the browser's own time zone. */
+  get now(): Date {
+    // eslint-disable-next-line svelte/prefer-svelte-reactivity -- a fresh read-only snapshot; reactivity comes from #nowMs
+    return new Date(this.#nowMs);
+  }
 
   constructor() {
     const show = load<unknown>('clockShow', false);
@@ -60,9 +68,10 @@ export class ClockStore {
   watch(): () => void {
     let timeout: ReturnType<typeof setTimeout> | undefined;
     const tick = () => {
-      this.now.setTime(Date.now());
+      const t = Date.now(); // a local, so a caller's $effect does not subscribe to #nowMs
+      this.#nowMs = t;
       clearTimeout(timeout);
-      timeout = setTimeout(tick, 60_000 - (this.now.getTime() % 60_000) + 20);
+      timeout = setTimeout(tick, 60_000 - (t % 60_000) + 20);
     };
     const onVisible = () => {
       if (document.visibilityState === 'visible') tick();
