@@ -12,3 +12,8 @@ server/*.exe
 server/server
 server/cafe-server
 *.test.exe
+
+# prompting files
+HUMAN_TODO.md
+QA.md
+TODO.md
