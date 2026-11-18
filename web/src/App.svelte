@@ -23,7 +23,7 @@
 
   const lockedBy = $derived(rooms.hostName ?? undefined);
   const lockedNote = $derived(
-    `You're following ${lockedBy ?? 'someone'}'s timer. Only an owner can change this.`,
+    `You're following ${lockedBy ?? 'someone'}'s timer. Only host or co-host can change this.`,
   );
 
   // Leaving someone else's timer restores this person's own settings;

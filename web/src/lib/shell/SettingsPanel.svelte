@@ -24,7 +24,7 @@
   ];
 
   const lockedNote = $derived(
-    `You're following ${lockedBy ?? 'someone'}'s timer. Only an owner can change these.`,
+    `You're following ${lockedBy ?? 'someone'}'s timer. Only host or co-host can change these.`,
   );
 
   let dialog: HTMLElement | undefined = $state();

@@ -146,8 +146,9 @@ describe('SettingsPanel', () => {
     render(SettingsPanel, { open: true, locked: true, lockedBy: 'Chai Fox' });
     expect(screen.getByLabelText('Change scene automatically')).toBeDisabled();
     expect(
-      screen.getAllByText("You're following Chai Fox's timer. Only an owner can change these.")
-        .length,
+      screen.getAllByText(
+        "You're following Chai Fox's timer. Only host or co-host can change these.",
+      ).length,
     ).toBeGreaterThan(0);
     expect(screen.getByLabelText(/Display name/)).toBeEnabled();
   });

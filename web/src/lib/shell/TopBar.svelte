@@ -13,13 +13,6 @@
     clocks,
     scenes,
   }: { onsettings: () => void; clocks?: Snippet; scenes?: Snippet } = $props();
-
-  const silent = $derived(sound.muted || !sound.enabled);
-
-  function onmute() {
-    if (!sound.enabled) onsettings();
-    else sound.toggleMuted();
-  }
 </script>
 
 <header class="topbar">
@@ -44,9 +37,9 @@
       class="btn icon"
       aria-pressed={sound.muted}
       aria-label={sound.muted ? 'Unmute sound' : 'Mute sound'}
-      onclick={onmute}
+      onclick={() => sound.toggleMuted()}
     >
-      {#if silent}<IconSoundOff />{:else}<IconSoundOn />{/if}
+      {#if sound.muted}<IconSoundOff />{:else}<IconSoundOn />{/if}
     </button>
     <button type="button" class="btn icon" aria-label="Settings" onclick={onsettings}>
       <IconGear />

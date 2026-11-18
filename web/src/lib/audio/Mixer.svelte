@@ -14,6 +14,7 @@
   let renamingId = $state<string | null>(null);
   let renameText = $state('');
   let renameError = $state<string | null>(null);
+  let deletingId = $state<string | null>(null);
   let list: HTMLElement | undefined = $state();
 
   // Background picker: one open at a time, placed with fixed coordinates so it stays on screen.
@@ -118,12 +119,36 @@
     renameError = null;
   }
 
+  /** Save the typed name. An empty name keeps the old one. A clash keeps editing unless `revert`. */
+  function commitRename(id: string, revert = false) {
+    if (renamingId !== id) return;
+    if (!renameText.trim()) return stopRename();
+    const err = sound.renameSaved(id, renameText);
+    if (!err || revert) stopRename();
+    else renameError = err;
+  }
+
+  async function askDelete(id: string) {
+    deletingId = id;
+    await tick();
+    list?.querySelector<HTMLButtonElement>('button.cancel-delete')?.focus();
+  }
+
+  async function cancelDelete(id: string) {
+    deletingId = null;
+    await tick();
+    list?.querySelector<HTMLButtonElement>(`button[data-del="${CSS.escape(id)}"]`)?.focus();
+  }
+
+  function confirmDelete(id: string) {
+    deletingId = null;
+    sound.deleteSaved(id);
+  }
+
   function onRenameKey(e: KeyboardEvent, id: string) {
     if (e.key === 'Enter') {
       e.preventDefault();
-      const err = sound.renameSaved(id, renameText);
-      if (err) renameError = err;
-      else stopRename();
+      commitRename(id);
     } else if (e.key === 'Escape') {
       e.preventDefault();
       stopRename();
@@ -132,16 +157,11 @@
 </script>
 
 <section class="mixer" aria-label="Sounds">
-  {#if disabled && lockedNote}
-    <p class="note">{lockedNote}</p>
-  {/if}
-
   <div class="top">
     <label class="switch">
       <input
         type="checkbox"
         checked={sound.enabled}
-        {disabled}
         onchange={(e) => sound.setEnabled(e.currentTarget.checked)}
       />
       <span class="track" aria-hidden="true"><span class="knob"></span></span>
@@ -157,11 +177,14 @@
         value={Math.round(sound.master * 100)}
         style:--fill={fill(Math.round(sound.master * 100))}
         aria-valuetext={`${Math.round(sound.master * 100)}%`}
-        {disabled}
         oninput={onMaster}
       />
     </label>
   </div>
+
+  {#if disabled && lockedNote}
+    <p class="note">{lockedNote}</p>
+  {/if}
 
   <div class="group" bind:this={list}>
     <h3>Mixes</h3>
@@ -170,16 +193,40 @@
         <li class:editing={renamingId === m.id}>
           {#if renamingId === m.id}
             <div class="rename-wrap">
-              <input
-                class="rename text"
-                type="text"
-                maxlength="30"
-                aria-label={`New name for ${m.name}`}
-                bind:value={renameText}
-                {disabled}
-                onkeydown={(e) => onRenameKey(e, m.id)}
-              />
+              <div class="rename-box">
+                <input
+                  class="rename text"
+                  type="text"
+                  maxlength="30"
+                  aria-label={`New name for ${m.name}`}
+                  bind:value={renameText}
+                  {disabled}
+                  onkeydown={(e) => onRenameKey(e, m.id)}
+                  onblur={() => commitRename(m.id, true)}
+                />
+                <!-- mousedown is cancelled so the input keeps focus: only the click saves. -->
+                <button
+                  type="button"
+                  class="enter"
+                  aria-label="Save name"
+                  {disabled}
+                  onmousedown={(e) => e.preventDefault()}
+                  onclick={() => commitRename(m.id)}
+                >
+                  <span aria-hidden="true">&crarr;</span>
+                </button>
+              </div>
               {#if renameError}<p class="error" role="alert">{renameError}</p>{/if}
+            </div>
+          {:else if deletingId === m.id}
+            <div class="confirm">
+              <p class="ask">Delete {m.name}?</p>
+              <button type="button" class="btn" {disabled} onclick={() => confirmDelete(m.id)}>
+                Delete
+              </button>
+              <button type="button" class="btn cancel-delete" onclick={() => cancelDelete(m.id)}>
+                Cancel
+              </button>
             </div>
           {:else}
             <span class="chip">
@@ -235,8 +282,9 @@
               type="button"
               class="icon del"
               aria-label={`Delete ${m.name}`}
+              data-del={m.id}
               {disabled}
-              onclick={() => sound.deleteSaved(m.id)}
+              onclick={() => askDelete(m.id)}
             >
               <span class="cross" aria-hidden="true"></span>
             </button>
@@ -599,6 +647,48 @@
     flex-direction: column;
     gap: var(--s1);
     min-width: 0;
+  }
+
+  .rename-box {
+    position: relative;
+    display: flex;
+  }
+
+  .rename-box .text {
+    padding-right: 44px;
+  }
+
+  .enter {
+    position: absolute;
+    top: 3px;
+    right: 3px;
+    bottom: 3px;
+    width: 36px;
+    padding: 0;
+    display: grid;
+    place-items: center;
+    background: var(--butter);
+    border: var(--border);
+    color: var(--ink);
+    cursor: pointer;
+  }
+
+  .enter:disabled {
+    background: var(--foam);
+    color: var(--plum);
+    cursor: not-allowed;
+  }
+
+  .confirm {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--s1) var(--s2);
+  }
+
+  .ask {
+    margin: 0;
+    overflow-wrap: anywhere;
   }
 
   .icon {

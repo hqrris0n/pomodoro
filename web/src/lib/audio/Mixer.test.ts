@@ -60,7 +60,7 @@ describe('Mixer', () => {
     expect(sound.enabled).toBe(false);
     await setSlider('Rain', 40);
     expect(sound.mix.rain).toBe(0.4);
-    expect(sound.enabled).toBe(false);
+    expect(sound.enabled).toBe(true);
     expect(slider('Rain')).toHaveAttribute('aria-valuetext', '40%');
   });
 
@@ -133,7 +133,48 @@ describe('Mixer', () => {
     expect(screen.getByRole('button', { name: 'Deep work' })).toBeInTheDocument();
 
     await fireEvent.click(screen.getByRole('button', { name: 'Delete Deep work' }));
+    expect(screen.getByText('Delete Deep work?')).toBeInTheDocument();
+    await fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByText('Delete Deep work?')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Deep work' })).toBeInTheDocument();
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Delete Deep work' }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     expect(screen.queryByRole('button', { name: 'Deep work' })).toBeNull();
+  });
+
+  it('saves a rename on blur or the Save name button, cancels on Escape, ignores empty', async () => {
+    await setup();
+    const open = async (name: string) => {
+      await fireEvent.click(screen.getByRole('button', { name: `Rename ${name}` }));
+      return screen.getByRole('textbox', { name: `New name for ${name}` });
+    };
+    let box = await open('Rainy day');
+    await fireEvent.input(box, { target: { value: 'Storm' } });
+    await fireEvent.blur(box);
+    expect(screen.getByRole('button', { name: 'Storm' })).toBeInTheDocument();
+
+    box = await open('Storm');
+    await fireEvent.input(box, { target: { value: 'Drizzle' } });
+    await fireEvent.click(screen.getByRole('button', { name: 'Save name' }));
+    expect(screen.getByRole('button', { name: 'Drizzle' })).toBeInTheDocument();
+    expect(screen.queryByRole('textbox', { name: /New name/ })).toBeNull();
+
+    box = await open('Drizzle');
+    await fireEvent.input(box, { target: { value: 'Nope' } });
+    await fireEvent.keyDown(box, { key: 'Escape' });
+    expect(screen.getByRole('button', { name: 'Drizzle' })).toBeInTheDocument();
+
+    box = await open('Drizzle');
+    await fireEvent.input(box, { target: { value: '  ' } });
+    await fireEvent.blur(box);
+    expect(screen.getByRole('button', { name: 'Drizzle' })).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).toBeNull();
+
+    box = await open('Drizzle');
+    await fireEvent.input(box, { target: { value: 'Busy café' } });
+    await fireEvent.blur(box);
+    expect(screen.getByRole('button', { name: 'Drizzle' })).toBeInTheDocument();
   });
 
   it('links a background to a mix through the picker icon', async () => {
@@ -157,18 +198,25 @@ describe('Mixer', () => {
     expect(icon).toHaveFocus();
   });
 
-  it('disables every control and shows the locked note', async () => {
+  it('when locked, keeps Sound and Overall volume usable and the rest disabled', async () => {
     await setup({ disabled: true, lockedNote: 'Only the host can edit.' });
-    expect(screen.getByText('Only the host can edit.')).toBeVisible();
+    const sw = screen.getByRole('checkbox', { name: 'Sound' });
+    const master = screen.getByRole('slider', { name: /Overall volume/ });
+    expect(sw).toBeEnabled();
+    expect(master).toBeEnabled();
+    const note = screen.getByText('Only the host can edit.');
+    expect(note).toBeVisible();
+    expect(master.compareDocumentPosition(note) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     const controls = [
-      ...screen.getAllByRole('slider'),
+      ...screen.getAllByRole('slider').filter((s) => s !== master),
       ...screen.getAllByRole('button'),
       ...screen.getAllByRole('textbox'),
-      screen.getByRole('checkbox', { name: 'Sound' }),
+      ...screen.getAllByRole('checkbox').filter((c) => c !== sw),
     ];
     expect(controls.length).toBeGreaterThan(8);
     for (const c of controls) expect(c).toBeDisabled();
-    expect(sound.enabled).toBe(false);
+    await fireEvent.click(sw);
+    expect(sound.enabled).toBe(true);
   });
 
   it('shows the store error when the channel list fails to load', async () => {

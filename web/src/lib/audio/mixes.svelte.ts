@@ -10,7 +10,8 @@ type EngineLike = Pick<
   'unlock' | 'setChannels' | 'setMix' | 'setMaster' | 'setMuted' | 'playChime'
 >;
 
-type SoundPrefs = { mix: Mix; levels: Mix; master: number; muted: boolean; enabled: boolean };
+/** `muted` is only read, from prefs saved before mute and the Sound switch were one setting. */
+type SoundPrefs = { mix: Mix; levels: Mix; master: number; enabled: boolean; muted?: boolean };
 
 const MAX_NAME = 30;
 const DEFAULT_LEVEL = 0.5;
@@ -59,8 +60,12 @@ export class SoundStore {
   /** Last non-zero level per channel, kept while the channel is switched off. */
   levels = $state<Mix>({});
   master = $state(0.8);
-  muted = $state(false);
+  /** The one sound setting: the mixer's Sound switch and the top-bar mute button. */
   enabled = $state(false);
+  /** Muted is simply not enabled. */
+  get muted(): boolean {
+    return !this.enabled;
+  }
   private userMixes = $state<SavedMix[]>([]);
   /** backgroundId -> mixId: the mix that starts when that background is chosen. */
   links = $state<Record<string, string>>({});
@@ -80,8 +85,7 @@ export class SoundStore {
     if (typeof prefs.master === 'number' && Number.isFinite(prefs.master)) {
       this.master = clamp01(prefs.master);
     }
-    this.muted = prefs.muted === true;
-    this.enabled = prefs.enabled === true;
+    this.enabled = prefs.enabled === true && prefs.muted !== true;
     const stored = load<unknown>('mixes', null);
     if (Array.isArray(stored)) {
       for (const m of stored) {
@@ -143,7 +147,14 @@ export class SoundStore {
     }
   }
 
+  /** Set one channel's level; raising it turns sound on. */
   setVolume(channelId: string, volume: number): void {
+    this.applyVolume(channelId, volume);
+    if (this.mix[channelId] > 0) this.enabled = true;
+    this.commit();
+  }
+
+  private applyVolume(channelId: string, volume: number): void {
     const v = Number.isFinite(volume) ? clamp01(volume) : 0;
     const next = { ...this.mix };
     if (v > 0) {
@@ -153,22 +164,23 @@ export class SoundStore {
       delete next[channelId];
     }
     this.mix = next;
-    this.commit();
   }
 
   /** Switch one channel on (at its remembered level, else 50%) or off. Never touches `enabled`. */
   setChannelOn(channelId: string, on: boolean): void {
-    this.setVolume(channelId, on ? (this.levels[channelId] ?? DEFAULT_LEVEL) : 0);
+    this.applyVolume(channelId, on ? (this.levels[channelId] ?? DEFAULT_LEVEL) : 0);
+    this.commit();
   }
 
+  /** Set the overall volume; moving it turns sound on. */
   setMaster(v: number): void {
     this.master = Number.isFinite(v) ? clamp01(v) : 0;
+    this.enabled = true;
     this.commit();
   }
 
   toggleMuted(): void {
-    this.muted = !this.muted;
-    this.commit();
+    this.setEnabled(!this.enabled);
   }
 
   setEnabled(on: boolean): void {
@@ -302,7 +314,6 @@ export class SoundStore {
       mix: $state.snapshot(this.mix),
       levels: $state.snapshot(this.levels),
       master: this.master,
-      muted: this.muted,
       enabled: this.enabled,
     } satisfies SoundPrefs);
     this.push();

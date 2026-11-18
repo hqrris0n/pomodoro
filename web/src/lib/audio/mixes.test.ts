@@ -45,23 +45,52 @@ describe('SoundStore state', () => {
     expect(store.activeSavedId).toBeNull();
   });
 
-  it('setVolume drops zero entries, keeps the remembered level, never changes enabled', () => {
+  it('setVolume drops zero entries and keeps the remembered level', () => {
     const { store } = make();
     store.setVolume('rain', 0.5);
-    expect(store.enabled).toBe(false);
     store.setVolume('rain', 0);
     expect(store.mix).toEqual({});
     expect(store.levels.rain).toBe(0.5);
-    expect(store.enabled).toBe(false);
-    store.setEnabled(true);
     store.setVolume('rain', 0.3);
     store.setVolume('rain', 0);
     expect(store.enabled).toBe(true);
   });
 
+  it('mute and the Sound switch are one setting', () => {
+    const { engine, store } = make();
+    expect(store.muted).toBe(true);
+    store.setEnabled(true);
+    expect(store.muted).toBe(false);
+    expect(engine.setMuted).toHaveBeenLastCalledWith(false);
+    store.toggleMuted();
+    expect(store.enabled).toBe(false);
+    expect(engine.setMuted).toHaveBeenLastCalledWith(true);
+    store.toggleMuted();
+    expect(store.enabled).toBe(true);
+  });
+
+  it('moving the overall volume or a channel level turns sound on', () => {
+    const { store } = make();
+    store.setMaster(0.5);
+    expect(store.enabled).toBe(true);
+    store.setEnabled(false);
+    store.setVolume('rain', 0.4);
+    expect(store.enabled).toBe(true);
+  });
+
+  it('loads old saved prefs as on only if enabled and not muted', () => {
+    const load = (p: object) => {
+      localStorage.setItem('cafe:sound', JSON.stringify(p));
+      return make().store.enabled;
+    };
+    expect(load({ enabled: true, muted: false })).toBe(true);
+    expect(load({ enabled: true, muted: true })).toBe(false);
+    expect(load({ enabled: false, muted: false })).toBe(false);
+  });
+
   it('switching a channel off and on restores its level; default is 50%', () => {
     const { engine, store } = make();
-    store.setVolume('rain', 0.7);
+    store.applyMix({ rain: 0.7 });
     store.setChannelOn('rain', false);
     expect(store.mix).toEqual({});
     expect(engine.mixes.at(-1)).toEqual({});
@@ -69,7 +98,7 @@ describe('SoundStore state', () => {
     expect(store.mix).toEqual({ rain: 0.7 });
     store.setChannelOn('wind', true);
     expect(store.mix).toEqual({ rain: 0.7, wind: 0.5 });
-    expect(store.enabled).toBe(false);
+    expect(store.enabled).toBe(false); // switching a channel never touches the Sound setting
   });
 
   it('applyMix replaces levels without touching enabled; absent channels keep their memory', () => {
@@ -116,9 +145,8 @@ describe('SoundStore state', () => {
     await store.unlock();
     expect(engine.unlock).toHaveBeenCalled();
     store.setMaster(0.3);
-    store.toggleMuted();
     expect(engine.setMaster).toHaveBeenLastCalledWith(0.3);
-    expect(engine.setMuted).toHaveBeenLastCalledWith(true);
+    expect(engine.setMuted).toHaveBeenLastCalledWith(false);
   });
 });
 
@@ -215,13 +243,12 @@ describe('SoundStore saved mixes', () => {
     const { store } = make();
     store.setVolume('rain', 0.5);
     store.setMaster(0.4);
-    store.toggleMuted();
+    store.setEnabled(false);
     store.saveCurrent('Mine');
     const { store: again, engine } = make();
     expect(again.mix).toEqual({ rain: 0.5 });
     expect(again.levels).toEqual({ rain: 0.5 });
     expect(again.master).toBe(0.4);
-    expect(again.muted).toBe(true);
     expect(again.enabled).toBe(false);
     expect(again.saved.map((s) => s.name)).toEqual([
       'Quiet morning',

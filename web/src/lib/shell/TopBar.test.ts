@@ -7,7 +7,6 @@ import TopBar from './TopBar.svelte';
 describe('TopBar mute button', () => {
   beforeEach(() => {
     localStorage.clear();
-    sound.muted = false;
     sound.enabled = false;
   });
   afterEach(cleanup);
@@ -19,20 +18,22 @@ describe('TopBar mute button', () => {
     const button = screen.getByRole('button', { name: 'Mute sound' });
     expect(button).toHaveAttribute('aria-pressed', 'false');
     await fireEvent.click(button);
-    expect(sound.muted).toBe(true);
+    expect(sound.enabled).toBe(false);
     const unmute = screen.getByRole('button', { name: 'Unmute sound' });
     expect(unmute).toHaveAttribute('aria-pressed', 'true');
     await fireEvent.click(unmute);
-    expect(sound.muted).toBe(false);
+    expect(sound.enabled).toBe(true);
     expect(onsettings).not.toHaveBeenCalled();
   });
 
-  it('opens settings instead when sound is not enabled', async () => {
+  it('turns sound on, without opening settings, when it starts muted', async () => {
     const onsettings = vi.fn();
     render(TopBar, { onsettings });
-    await fireEvent.click(screen.getByRole('button', { name: 'Mute sound' }));
-    expect(onsettings).toHaveBeenCalledOnce();
-    expect(sound.muted).toBe(false);
+    const button = screen.getByRole('button', { name: 'Unmute sound' });
+    expect(button).toHaveAttribute('aria-pressed', 'true');
+    await fireEvent.click(button);
+    expect(sound.enabled).toBe(true);
+    expect(onsettings).not.toHaveBeenCalled();
   });
 
   it('opens settings from the gear', async () => {
