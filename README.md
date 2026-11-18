@@ -31,11 +31,11 @@ still works locally: settings, to-dos and saved mixes live in your browser.
 
 ## How it is built
 
-| Part | What | Where |
-| --- | --- | --- |
-| Web app | Svelte 5 + TypeScript, built with Vite into static files | `web/` |
-| Server | One Go program, standard library only. Serves the static files and keeps the list of shared timers in memory | `server/` |
-| Container | Both of the above in a single image of about 8 MB that idles at under 10 MB of RAM | `Dockerfile`, `compose.yml` |
+| Part      | What                                                                                                         | Where                       |
+| --------- | ------------------------------------------------------------------------------------------------------------ | --------------------------- |
+| Web app   | Svelte 5 + TypeScript, built with Vite into static files                                                     | `web/`                      |
+| Server    | One Go program, standard library only. Serves the static files and keeps the list of shared timers in memory | `server/`                   |
+| Container | Both of the above in a single image of about 8 MB that idles at under 10 MB of RAM                           | `Dockerfile`, `compose.yml` |
 
 The timer is computed from a start time, not counted down by the server, so
 the server does nothing between events and a solo timer keeps working when
@@ -76,14 +76,14 @@ npm run dev           # app on http://localhost:5173, /api proxied to :8080
 The app works without the server; only the shared-timer menu stays empty. To
 have the server as well, run the container above next to `npm run dev`.
 
-| Command (from `web/`) | Does |
-| --- | --- |
-| `npm run format` | Format with Prettier |
-| `npm run lint` | ESLint |
-| `npm run check` | Type-check |
-| `npm run test` | Unit tests (Vitest) |
-| `npm run e2e` | End-to-end tests (Playwright, desktop and phone) |
-| `npm run build` | Production build into `web/dist` |
+| Command (from `web/`) | Does                                             |
+| --------------------- | ------------------------------------------------ |
+| `npm run format`      | Format with Prettier                             |
+| `npm run lint`        | ESLint                                           |
+| `npm run check`       | Type-check                                       |
+| `npm run test`        | Unit tests (Vitest)                              |
+| `npm run e2e`         | End-to-end tests (Playwright, desktop and phone) |
+| `npm run build`       | Production build into `web/dist`                 |
 
 Server tests, from `server/`: `go vet ./... && go test -race ./...`
 
