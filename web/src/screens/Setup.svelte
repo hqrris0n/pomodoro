@@ -128,7 +128,13 @@
       align-items: center;
       justify-content: center;
       pointer-events: none;
-      --clock-size: clamp(72px, min(9vw, 20vh), 240px);
+      /* Fill the space right of the ticket (the time is about 2.9em wide),
+         clear of the ticket and the window edge. */
+      --clock-size: clamp(
+        72px,
+        min((min(50vw, 150vw - 2 * (var(--ticket-width) + var(--s6))) - var(--s3) * 2) / 2.9, 40vh),
+        500px
+      );
     }
 
     .ticket {

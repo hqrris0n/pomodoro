@@ -99,11 +99,57 @@
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: var(--s3);
-    padding: var(--s3) var(--s3) var(--s4);
+    gap: var(--s2);
+    padding: var(--s2) var(--s3) var(--s4);
+    /* Head height the scene used to be measured against (the old, smaller
+       time), so the scene keeps its size now that the time is bigger. */
+    --head-base: calc(var(--t-timer-base) + var(--s3) - var(--s2) + 1.4 * var(--t2));
+    --scene-w: min(
+      100vw - var(--s3) * 2,
+      640px,
+      (100dvh - var(--topbar-height) - var(--head-base) - 48px - var(--s3) * 3 - var(--s4)) * 5 / 3
+    );
+    /* BrewScene snaps its width down to a multiple of 160px (min 280px). */
+    --scene-h: calc(var(--scene-w) * 0.6);
+    --bottom-pad: var(--s4);
+    /* Everything the window has left once the scene, controls (56px, room
+       for a note), padding and gaps are placed goes to the head. */
+    --head-room: calc(
+      100dvh - var(--topbar-height) - var(--s2) - var(--bottom-pad) - 56px - var(--scene-h) -
+        var(--s2) * 2
+    );
+    --t-timer: clamp(
+      72px,
+      min(38vw, var(--head-room) - var(--s3) + var(--s2) - 1.4 * var(--t2)),
+      500px
+    );
+    --t-clock: clamp(
+      56px,
+      min(30vw, (var(--head-room) - var(--s1) * 2 - 1.4 * var(--t2)) / 1.5),
+      500px
+    );
     /* Fixed height of the countdown + status block, so the ready heading
        takes the same room and the scene never moves when the drink is done. */
     --head-h: calc(var(--t-timer) + var(--s3) - var(--s2) + 1.4 * var(--t2));
+    padding-bottom: var(--bottom-pad);
+  }
+
+  @supports (width: round(down, 100%, 160px)) {
+    .column {
+      --scene-w: max(
+        280px,
+        round(
+          down,
+          min(
+            100vw - var(--s3) * 2,
+            640px,
+            (100dvh - var(--topbar-height) - var(--head-base) - 48px - var(--s3) * 3 - var(--s4)) *
+              5 / 3
+          ),
+          160px
+        )
+      );
+    }
   }
 
   .column:has(.head.with-clock) {
@@ -151,13 +197,15 @@
     text-shadow: calc(var(--px) * 2) calc(var(--px) * 2) 0 var(--ink);
   }
 
-  /* Shrink the scene (160:96) when the window is too short for the full 640px. */
+  /* Shrink the scene (160:96) when the window is too short for the full 640px.
+     Measured against the old head (--head-base), not the bigger one. */
   .scene {
     width: min(
       100%,
       640px,
       calc(
-        (100dvh - var(--topbar-height) - var(--head-h) - 48px - var(--s3) * 3 - var(--s4)) * 5 / 3
+        (100dvh - var(--topbar-height) - var(--head-base) - 48px - var(--s3) * 3 - var(--s4)) * 5 /
+          3
       )
     );
   }
@@ -166,7 +214,7 @@
   @media (max-width: 1375px) {
     .column {
       /* keep the collapsed 48px bar clear of the controls */
-      padding-bottom: calc(48px + var(--s4));
+      --bottom-pad: calc(48px + var(--s2));
     }
   }
 </style>

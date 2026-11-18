@@ -35,9 +35,14 @@
   --t2: 25px;
   --t3: 30px;
   --t4: 40px;
-  --t-timer: clamp(72px, min(20vw, 18vh), 240px);
+  /* Up to 500px, as large as the window allows. Timer.svelte overrides the
+     two sizes with ones that also fit the height left over by the scene. */
+  --t-timer: clamp(72px, min(38vw, 40vh), 500px);
   /* The clock plus the half-size countdown under it is 1.5x this tall. */
-  --t-clock: clamp(56px, min(18vw, 12vh), 240px);
+  --t-clock: clamp(56px, min(30vw, 26vh), 500px);
+  /* The earlier, smaller countdown size. Only the scene width is still measured
+     from it, so growing the time does not shrink the brew scene. */
+  --t-timer-base: clamp(72px, min(20vw, 18vh), 240px);
 
   /* chrome */
   --border: var(--px) solid var(--ink);
