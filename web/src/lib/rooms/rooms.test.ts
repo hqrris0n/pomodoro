@@ -53,6 +53,7 @@ const mkRoom = (over: Partial<Room> = {}): Room => ({
   id: 'r1',
   settings: SETTINGS,
   timer: TIMER,
+  timerRev: 1,
   members: [member('me', 'host', 1)],
   ...over,
 });
@@ -220,11 +221,14 @@ describe('publishing my timer', () => {
     });
   });
 
-  it('leaves the room when the owner stops the timer', async () => {
+  it('keeps the room open, clearing its timer, when the host stops the timer', async () => {
     await h.asHost();
     h.timer.stop();
-    expect(h.api.leaveRoom).toHaveBeenCalledWith(h.identity.token, 'r1');
-    expect(h.rooms.room).toBeNull();
+    expect(h.api.patchRoom).toHaveBeenCalledWith(h.identity.token, 'r1', { timer: null });
+    expect(h.api.leaveRoom).not.toHaveBeenCalled();
+    expect(h.rooms.room?.id).toBe('r1');
+    expect(h.rooms.role).toBe('host');
+    expect(h.rooms.waiting).toBe(false);
   });
 
   it('re-creates the room when the server forgot it', async () => {
@@ -255,7 +259,7 @@ describe('two tabs of one browser (one token, one member)', () => {
       }),
     );
 
-  it('keeps the timer stopped in both tabs after the owner leaves', async () => {
+  it('keeps the timer stopped in both tabs after the host restarts', async () => {
     const a = h;
     const b = setup();
     try {
@@ -267,25 +271,24 @@ describe('two tabs of one browser (one token, one member)', () => {
       expect(b.timer.state).not.toBeNull();
       await vi.advanceTimersByTimeAsync(5 * 60_000);
 
-      // Leave (confirmed) in tab A.
+      // Restart (confirmed) in tab A.
       a.timer.stop();
       otherTabsSee('timer');
-      // The server now has this token in no room; B holds the stream and hears it.
-      b.es().emit('room', { now: Date.now(), you: 'me', room: null });
+      expect(b.timer.state).toBeNull();
+      // The server keeps r1 open with no timer; B holds the stream and hears it.
+      const idle = mkRoom({ timer: null, timerRev: 2 });
+      b.es().emit('room', { now: Date.now(), you: 'me', room: idle });
       await b.settle();
 
-      // Tab A gets the stream back later and receives whatever room the token is in.
-      const created = b.api.createRoom.mock.calls[0] as unknown[] | undefined;
-      const sent = (created?.[1] as { timer: TimerState } | undefined)?.timer;
-      const serverRoom = sent
-        ? mkRoom({ id: 'r2', timer: { ...sent, anchorAt: Date.now() } })
-        : null;
-      a.es().emit('room', { now: Date.now(), you: 'me', room: serverRoom });
+      // Tab A gets the stream back later and receives the same idle room.
+      a.es().emit('room', { now: Date.now(), you: 'me', room: idle });
       await a.settle();
 
       expect(a.timer.state).toBeNull();
       expect(b.timer.state).toBeNull();
+      expect(a.rooms.room?.id).toBe('r1');
       expect(b.api.createRoom).not.toHaveBeenCalled();
+      expect(b.api.patchRoom).not.toHaveBeenCalled();
     } finally {
       b.stop();
       b.timer.stop();
@@ -523,5 +526,133 @@ describe('sticky notes', () => {
     expect(await h.rooms.sendNote('v', 'hi')).toBe('Too long.');
     h.api.sendNote.mockRejectedValueOnce(new TypeError('Failed to fetch'));
     expect(await h.rooms.sendNote('v', 'hi')).toBe("Can't reach the café right now.");
+  });
+});
+
+describe('between timers', () => {
+  const NEXT: TimerState = { ...TIMER, focusMs: 3_000_000, anchorAt: Date.now() };
+  const guestIn = (over: Partial<Room> = {}, role: Member['role'] = 'guest') =>
+    mkRoom({ id: 'other', members: [member('o', 'host', 1), member('me', role, 2)], ...over });
+  const emitRoom = async (room: Room | null) => {
+    h.es().emit('room', { now: Date.now(), you: 'me', room });
+    await h.settle();
+  };
+  /** Make the next patchRoom call wait until the returned function is called. */
+  const holdPatch = () => {
+    let release!: (room: Room) => void;
+    h.api.patchRoom.mockImplementationOnce(() => new Promise<Room>((r) => (release = r)));
+    return (room: Room) => release(room);
+  };
+
+  it('has a guest wait while the host orders, then follow the next timer', async () => {
+    await h.connect();
+    await h.rooms.join('other');
+    await emitRoom(guestIn({ timer: null, timerRev: 2 }));
+    expect(h.timer.state).toBeNull();
+    expect(h.rooms.waiting).toBe(true);
+    expect(h.rooms.roomHost).toBe('Name o');
+    expect(h.rooms.joined).toBe(true);
+    expect(h.drinks.selectedId).toBe('mocha');
+    expect(load('ownSettings', null)).not.toBeNull();
+
+    await emitRoom(guestIn({ timer: NEXT, timerRev: 3 }));
+    expect(h.timer.state).toEqual(NEXT);
+    expect(h.rooms.waiting).toBe(false);
+    expect(h.api.leaveRoom).not.toHaveBeenCalled();
+    expect(h.api.patchRoom).not.toHaveBeenCalled();
+  });
+
+  it('has a co-host wait too, without sending anything', async () => {
+    await h.connect();
+    await h.rooms.join('other');
+    await emitRoom(guestIn({ timer: null, timerRev: 2 }, 'cohost'));
+    expect(h.rooms.waiting).toBe(true);
+    expect(h.rooms.roomHost).toBe('Name o');
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(h.api.patchRoom).not.toHaveBeenCalled();
+    expect(h.api.createRoom).not.toHaveBeenCalled();
+  });
+
+  it('restores my own settings when I leave while waiting', async () => {
+    await h.connect();
+    await h.rooms.join('other');
+    await emitRoom(guestIn({ timer: null, timerRev: 2 }));
+    await h.rooms.leave();
+    expect(h.api.leaveRoom).toHaveBeenCalledWith(h.identity.token, 'other');
+    expect(h.rooms.room).toBeNull();
+    expect(h.rooms.waiting).toBe(false);
+    expect(h.drinks.selectedId).toBe('latte');
+    expect(h.sound.mix).toEqual({ hum: 0.3 });
+    expect(load('ownSettings', null)).toBeNull();
+  });
+
+  it('ignores events for a room I left that were sent before the leave', async () => {
+    await h.connect();
+    await h.rooms.join('other');
+    await h.rooms.leave();
+    await emitRoom(guestIn({ timer: NEXT, timerRev: 5 }));
+    expect(h.timer.state).toBeNull();
+    expect(h.rooms.room).toBeNull();
+    expect(h.drinks.selectedId).toBe('latte');
+    // After the server confirms, I can join that room again.
+    await emitRoom(null);
+    await h.rooms.join('other');
+    expect(h.rooms.room?.id).toBe('other');
+    await emitRoom(guestIn({ timer: NEXT, timerRev: 6 }));
+    expect(h.timer.state).toEqual(NEXT);
+  });
+
+  it('keeps a restarted host stopped despite late views, then starts the next timer in the same room', async () => {
+    await h.asHost();
+    const release = holdPatch();
+    h.timer.stop();
+    expect(h.api.patchRoom).toHaveBeenCalledWith(h.identity.token, 'r1', { timer: null });
+
+    // A view from before the clear arrives while the clear is in flight, and again after.
+    await emitRoom(mkRoom({ timerRev: 1 }));
+    expect(h.timer.state).toBeNull();
+    release(mkRoom({ timer: null, timerRev: 2 }));
+    await h.settle();
+    await emitRoom(mkRoom({ timerRev: 1 }));
+    expect(h.timer.state).toBeNull();
+    await emitRoom(mkRoom({ timer: null, timerRev: 2 }));
+    expect(h.timer.state).toBeNull();
+    expect(h.rooms.room?.id).toBe('r1');
+    expect(h.rooms.role).toBe('host');
+
+    h.api.patchRoom.mockResolvedValueOnce(mkRoom({ timer: NEXT, timerRev: 3 }));
+    await h.startTimer();
+    const mine = h.timer.state;
+    expect(h.api.patchRoom).toHaveBeenLastCalledWith(h.identity.token, 'r1', { timer: mine });
+    expect(h.api.createRoom).not.toHaveBeenCalled();
+    expect(h.api.leaveRoom).not.toHaveBeenCalled();
+    // The clear's own echo, arriving after the new timer was accepted, is stale.
+    await emitRoom(mkRoom({ timer: null, timerRev: 2 }));
+    expect(h.timer.state).toEqual(mine);
+  });
+
+  it('sends timer changes one at a time so the server applies them in order', async () => {
+    await h.asHost();
+    const release = holdPatch();
+    h.timer.pause();
+    h.timer.stop();
+    expect(h.api.patchRoom).toHaveBeenCalledOnce();
+    release(mkRoom({ timerRev: 2 }));
+    await h.settle();
+    expect(h.api.patchRoom).toHaveBeenCalledTimes(2);
+    expect(h.api.patchRoom).toHaveBeenLastCalledWith(h.identity.token, 'r1', { timer: null });
+  });
+
+  it('leaves rooms waiting for their host out of the list', async () => {
+    await h.connect();
+    const summary = (id: string, timer: TimerState | null) => ({
+      id,
+      ownerName: id,
+      memberCount: 1,
+      drinkId: 'latte',
+      timer,
+    });
+    h.es().emit('rooms', { now: Date.now(), rooms: [summary('a', TIMER), summary('b', null)] });
+    expect(h.rooms.list.map((r) => r.id)).toEqual(['a']);
   });
 });

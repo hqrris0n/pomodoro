@@ -202,6 +202,49 @@ func TestPermissionStatuses(t *testing.T) {
 	}
 }
 
+func TestPatchTimerNullClearsIt(t *testing.T) {
+	e := newEnv(t)
+	_, body := e.do(t, "POST", "/api/rooms", tok(1), createBody(nil))
+	var room Room
+	_ = json.Unmarshal([]byte(body), &room)
+	e.do(t, "POST", "/api/rooms/"+room.ID+"/join", tok(2), map[string]any{"name": "Bo"})
+	path := "/api/rooms/" + room.ID
+
+	// A guest cannot clear it; the host can, and the room keeps both members.
+	if status, _ := e.do(t, "PATCH", path, tok(2), `{"timer":null}`); status != 403 {
+		t.Fatalf("guest clear: %d", status)
+	}
+	status, body := e.do(t, "PATCH", path, tok(1), `{"timer": null}`)
+	if status != 200 {
+		t.Fatalf("host clear: %d %s", status, body)
+	}
+	var got map[string]any
+	_ = json.Unmarshal([]byte(body), &got)
+	if v, ok := got["timer"]; !ok || v != nil || got["timerRev"] != 2.0 || len(got["members"].([]any)) != 2 {
+		t.Fatalf("after clear: %s", body)
+	}
+	// An absent timer is kept, not cleared or bumped.
+	got = nil
+	_, body = e.do(t, "PATCH", path, tok(1), map[string]any{"settings": createBody(nil)["settings"]})
+	_ = json.Unmarshal([]byte(body), &got)
+	if got["timer"] != nil || got["timerRev"] != 2.0 {
+		t.Fatalf("after settings: %s", body)
+	}
+	// Starting the next timer goes into the same room.
+	got = nil
+	status, body = e.do(t, "PATCH", path, tok(1), map[string]any{"timer": createBody(nil)["timer"]})
+	_ = json.Unmarshal([]byte(body), &got)
+	if status != 200 || got["id"] != room.ID || got["timer"] == nil || got["timerRev"] != 3.0 {
+		t.Fatalf("restart: %d %s", status, body)
+	}
+	// Bad timers are still rejected, including unknown fields, and so is an empty patch.
+	for _, bad := range []string{`{"timer":{"focusMs":1}}`, `{"timer":{"bogus":1}}`, `{"timer":5}`, `{}`} {
+		if status, _ := e.do(t, "PATCH", path, tok(1), bad); status != 400 {
+			t.Fatalf("%s: %d", bad, status)
+		}
+	}
+}
+
 func TestStatic(t *testing.T) {
 	e := newEnv(t)
 	get := func(path string) (*http.Response, string) {

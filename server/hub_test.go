@@ -205,7 +205,7 @@ func TestPatchPermissions(t *testing.T) {
 	drain(visitor)
 
 	newTimer := testTimer(h, true)
-	_, err := h.Patch(tok(2), r.ID, nil, &newTimer)
+	_, err := h.Patch(tok(2), r.ID, nil, &newTimer, false)
 	wantStatus(t, err, 403)
 	if got, _ := h.room(r.ID); got.Timer.AnchorAt != nil {
 		t.Fatal("visitor changed state")
@@ -214,7 +214,7 @@ func TestPatchPermissions(t *testing.T) {
 		t.Fatal("rejected patch produced events")
 	}
 
-	if _, err := h.Patch(tok(1), r.ID, nil, &newTimer); err != nil {
+	if _, err := h.Patch(tok(1), r.ID, nil, &newTimer, false); err != nil {
 		t.Fatal(err)
 	}
 	ev := lastOf(drain(visitor), "room")
@@ -277,7 +277,7 @@ func TestHostLeavingPrefersEarliestCohostThenEarliestGuest(t *testing.T) {
 	if roleOf(after, tok(4)) != roleHost || roleOf(after, tok(2)) != roleGuest || roleOf(after, tok(3)) != roleGuest {
 		t.Fatalf("members = %+v", after.Members)
 	}
-	if after.Timer != before.Timer {
+	if *after.Timer != *before.Timer {
 		t.Fatal("timer changed")
 	}
 	// No co-hosts left: the earliest guest (Bo) takes over.
@@ -306,7 +306,7 @@ func TestHostLeavingPassesHostToEarliestJoiner(t *testing.T) {
 	if roleOf(after, tok(2)) != roleHost || roleOf(after, tok(3)) != roleGuest {
 		t.Fatalf("members = %+v", after.Members)
 	}
-	if after.Timer != before.Timer {
+	if *after.Timer != *before.Timer {
 		t.Fatal("timer changed")
 	}
 }
@@ -667,5 +667,173 @@ func TestNoteQueueDroppedWhenRoomRemoved(t *testing.T) {
 	cn, _ := h.Connect(tok(2), "")
 	if len(notesIn(drain(cn))) != 0 {
 		t.Fatal("note survived room removal")
+	}
+}
+
+// idleSetup makes a room hosted by tok(1) with a co-host tok(2) and a guest
+// tok(3), all with open streams, and returns the room and the guest's stream.
+func idleSetup(t *testing.T) (*hub, *fakeClock, Room, *conn) {
+	t.Helper()
+	h, clk := newTestHub()
+	r := mustCreate(t, h, tok(1), "Ada")
+	clk.Advance(time.Second)
+	mustJoin(t, h, tok(2), r.ID, "Bo")
+	clk.Advance(time.Second)
+	mustJoin(t, h, tok(3), r.ID, "Cy")
+	if _, err := h.SetRole(tok(1), r.ID, memberID(tok(2)), roleCohost); err != nil {
+		t.Fatal(err)
+	}
+	h.Connect(tok(1), "")
+	h.Connect(tok(2), "")
+	guest, _ := h.Connect(tok(3), "")
+	drain(guest)
+	r, _ = h.room(r.ID)
+	return h, clk, r, guest
+}
+
+func TestHostClearingTimerKeepsRoomAndMembers(t *testing.T) {
+	h, _, before, guest := idleSetup(t)
+	got, err := h.Patch(tok(1), before.ID, nil, nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Timer != nil || got.TimerRev != before.TimerRev+1 {
+		t.Fatalf("timer = %+v rev %d, want nil rev %d", got.Timer, got.TimerRev, before.TimerRev+1)
+	}
+	if len(got.Members) != 3 || roleOf(got, tok(1)) != roleHost ||
+		roleOf(got, tok(2)) != roleCohost || roleOf(got, tok(3)) != roleGuest {
+		t.Fatalf("members = %+v", got.Members)
+	}
+	evs := drain(guest)
+	ev := lastOf(evs, "room")
+	if ev == nil {
+		t.Fatal("guest got no room event")
+	}
+	room := ev.data["room"].(map[string]any)
+	if room["id"] != before.ID || room["timer"] != nil {
+		t.Fatalf("guest saw %+v", room)
+	}
+	list := lastOf(evs, "rooms").data["rooms"].([]any)
+	if len(list) != 1 || list[0].(map[string]any)["timer"] != nil {
+		t.Fatalf("summary = %+v", list)
+	}
+}
+
+func TestOnlyHostClearsOrStartsTimer(t *testing.T) {
+	h, _, r, guest := idleSetup(t)
+	tm := testTimer(h, true)
+	// While a timer exists a co-host may replace it, but not clear it.
+	if _, err := h.Patch(tok(2), r.ID, nil, &tm, false); err != nil {
+		t.Fatal(err)
+	}
+	_, err := h.Patch(tok(2), r.ID, nil, nil, true)
+	wantStatus(t, err, 403)
+	_, err = h.Patch(tok(3), r.ID, nil, nil, true)
+	wantStatus(t, err, 403)
+	if _, err := h.Patch(tok(1), r.ID, nil, nil, true); err != nil {
+		t.Fatal(err)
+	}
+	drain(guest)
+	// With no timer only the host can order the next one; settings stay open to co-hosts.
+	_, err = h.Patch(tok(2), r.ID, nil, &tm, false)
+	wantStatus(t, err, 403)
+	if len(drain(guest)) != 0 {
+		t.Fatal("rejected patch produced events")
+	}
+	s := testSettings()
+	s.DrinkID = "tea"
+	if _, err := h.Patch(tok(2), r.ID, &s, nil, false); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestHostStartingNextTimerUsesSameRoom(t *testing.T) {
+	h, _, r, guest := idleSetup(t)
+	if _, err := h.Patch(tok(1), r.ID, nil, nil, true); err != nil {
+		t.Fatal(err)
+	}
+	drain(guest)
+	tm := testTimer(h, true)
+	got, err := h.Patch(tok(1), r.ID, nil, &tm, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != r.ID || got.Timer == nil || got.Timer.AnchorAt == nil || got.TimerRev != r.TimerRev+2 {
+		t.Fatalf("room = %+v", got)
+	}
+	ev := lastOf(drain(guest), "room")
+	if ev == nil || ev.data["room"].(map[string]any)["id"] != r.ID ||
+		ev.data["room"].(map[string]any)["timer"] == nil {
+		t.Fatalf("guest saw %+v", ev)
+	}
+	h.mu.Lock()
+	n := len(h.rooms)
+	h.mu.Unlock()
+	if n != 1 {
+		t.Fatalf("%d rooms, want 1", n)
+	}
+}
+
+func TestIdleRoomExpiresAfterThirtyMinutes(t *testing.T) {
+	h, clk, r, guest := idleSetup(t)
+	if _, err := h.Patch(tok(1), r.ID, nil, nil, true); err != nil {
+		t.Fatal(err)
+	}
+	// Settings changes do not keep an idle room alive.
+	clk.Advance(10 * time.Minute)
+	s := testSettings()
+	if _, err := h.Patch(tok(1), r.ID, &s, nil, false); err != nil {
+		t.Fatal(err)
+	}
+	clk.Advance(20*time.Minute - time.Second)
+	h.Sweep()
+	if _, ok := h.room(r.ID); !ok {
+		t.Fatal("deleted too early")
+	}
+	drain(guest)
+	clk.Advance(time.Second)
+	h.Sweep()
+	if _, ok := h.room(r.ID); ok {
+		t.Fatal("idle room survived")
+	}
+	ev := lastOf(drain(guest), "room")
+	if ev == nil || ev.data["room"] != nil {
+		t.Fatalf("want room null, got %+v", ev)
+	}
+}
+
+func TestStartingTimerResetsIdleExpiry(t *testing.T) {
+	h, clk, r, _ := idleSetup(t)
+	if _, err := h.Patch(tok(1), r.ID, nil, nil, true); err != nil {
+		t.Fatal(err)
+	}
+	clk.Advance(29 * time.Minute)
+	tm := testTimer(h, false) // paused at 0, so the finished rule does not apply either
+	if _, err := h.Patch(tok(1), r.ID, nil, &tm, false); err != nil {
+		t.Fatal(err)
+	}
+	clk.Advance(time.Hour)
+	h.Sweep()
+	if _, ok := h.room(r.ID); !ok {
+		t.Fatal("room with a timer was removed by the idle rule")
+	}
+}
+
+func TestHostLeavingIdleRoomStillPromotes(t *testing.T) {
+	h, _, r, _ := idleSetup(t)
+	if _, err := h.Patch(tok(1), r.ID, nil, nil, true); err != nil {
+		t.Fatal(err)
+	}
+	// The host joins someone else's timer, which leaves this room.
+	other := mustCreate(t, h, tok(9), "Zed")
+	mustJoin(t, h, tok(1), other.ID, "Ada")
+	got, ok := h.room(r.ID)
+	if !ok || len(got.Members) != 2 || roleOf(got, tok(2)) != roleHost || got.Timer != nil {
+		t.Fatalf("room = %+v (ok %v)", got, ok)
+	}
+	// The promoted host can order the next timer.
+	tm := testTimer(h, true)
+	if _, err := h.Patch(tok(2), r.ID, nil, &tm, false); err != nil {
+		t.Fatal(err)
 	}
 }

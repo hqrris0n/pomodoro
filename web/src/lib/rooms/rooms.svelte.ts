@@ -9,7 +9,14 @@ import { timer } from '../timer/engine.svelte';
 import { elapsedAt, snapshot } from '../timer/schedule';
 import type { Mix, Settings, TimerState } from '../types';
 import * as realApi from './api';
-import { ApiError, type Role, type Room, type RoomSummary, type RoomsApi } from './api';
+import {
+  ApiError,
+  type ListedRoom,
+  type Role,
+  type Room,
+  type RoomSummary,
+  type RoomsApi,
+} from './api';
 
 const SNAPSHOT_KEY = 'ownSettings';
 const DEBOUNCE_MS = 300;
@@ -84,14 +91,23 @@ export class RoomsStore {
   clockOffset = $state(0);
   /** True while I am in someone else's room (as guest or co-host). */
   joined = $state(false);
-  #all = $state.raw<RoomSummary[]>([]);
+  #all = $state.raw<ListedRoom[]>([]);
 
-  list = $derived(this.#all.filter((r) => r.id !== this.room?.id));
+  /** Other rooms with a timer to follow; rooms waiting for their host to order are left out. */
+  list = $derived(
+    this.#all.filter((r): r is RoomSummary => r.id !== this.room?.id && r.timer !== null),
+  );
   locked = $derived(this.role === 'guest');
   hostName = $derived(
     this.role === 'guest'
       ? (this.room?.members.find((m) => m.role === 'host')?.name ?? null)
       : null,
+  );
+  /** The room's host, whatever my role. */
+  roomHost = $derived(this.room?.members.find((m) => m.role === 'host')?.name ?? null);
+  /** True while I am in a room whose host is choosing the next order (it has no timer). */
+  waiting = $derived(
+    this.room !== null && this.room.timer === null && this.role !== null && this.role !== 'host',
   );
   /** Host and co-hosts drive the timer and settings; guests only follow. */
   #controls = $derived(this.role === 'host' || this.role === 'cohost');
@@ -106,6 +122,14 @@ export class RoomsStore {
   #synced = '';
   #creating = false;
   #joining = false;
+  /** Highest `timerRev` applied or caused for the current room; older timers are stale. */
+  #seenRev = 0;
+  /** Timer patches in flight, sent one at a time so the server applies them in order. */
+  #patching = 0;
+  #patchingRoom: string | null = null;
+  #timerQueue: Promise<void> = Promise.resolve();
+  /** A room I just left: its events may still be in flight and must not pull me back. */
+  #leftRoom: string | null = null;
 
   constructor(deps: RoomsDeps) {
     this.#d = deps;
@@ -200,7 +224,7 @@ export class RoomsStore {
       const data = parse(e);
       if (!data || !Array.isArray(data.rooms)) return;
       this.#syncClock(data.now);
-      this.#all = data.rooms as RoomSummary[];
+      this.#all = data.rooms as ListedRoom[];
     });
     es.addEventListener('note', (e) => this.#onNote(e));
     es.addEventListener('room', (e) => {
@@ -245,6 +269,8 @@ export class RoomsStore {
 
   #onRoomEvent(room: Room | null) {
     if (this.#joining) return;
+    if (room && room.id === this.#leftRoom) return;
+    this.#leftRoom = null;
     if (!room) {
       this.room = null;
       this.role = null;
@@ -261,13 +287,22 @@ export class RoomsStore {
   /** Make `room` the current room and mirror it locally without sending anything. */
   #adopt(room: Room, role: Role) {
     const d = this.#d;
+    if (this.room?.id !== room.id) this.#seenRev = 0;
+    // While my own timer change is on its way, or when this view predates one
+    // already seen, the local timer is newer than the event's: keep it.
+    const mine = this.#patching > 0 && this.#patchingRoom === room.id;
+    const rev = room.timerRev ?? 0;
+    const fresh = !mine && rev >= this.#seenRev;
     this.room = room;
     this.role = role;
     if (role === 'guest' && !load<OwnSettings | null>(SNAPSHOT_KEY, null)) {
       this.#saveOwn();
     }
     this.joined = load<OwnSettings | null>(SNAPSHOT_KEY, null) !== null;
-    d.timer.apply(room.timer);
+    if (fresh) {
+      this.#seenRev = rev;
+      d.timer.apply(room.timer);
+    }
     d.drinks.select(room.settings.drinkId);
     d.backgrounds.select(room.settings.backgroundId);
     d.sound.applyMix({ ...room.settings.mix });
@@ -337,22 +372,47 @@ export class RoomsStore {
   #onTimerChange(state: TimerState | null) {
     const d = this.#d;
     if (this.role === 'guest') return;
+    const room = this.room;
     if (state === null) {
-      const room = this.room;
-      if (room) {
-        d.api.leaveRoom(d.identity.token, room.id).catch(() => {});
-        if (this.joined) this.#restoreOwn();
-        this.room = null;
-        this.role = null;
+      if (!room) return;
+      if (this.role === 'host') {
+        // The room stays open, with no timer, while the host orders the next one.
+        this.#patchTimer(room.id, null);
+        return;
       }
+      this.#leftRoom = room.id;
+      d.api.leaveRoom(d.identity.token, room.id).catch(() => {});
+      if (this.joined) this.#restoreOwn();
+      this.room = null;
+      this.role = null;
       return;
     }
-    if (this.room && this.#controls) {
-      const id = this.room.id;
-      d.api.patchRoom(d.identity.token, id, { timer: state }).catch(() => {});
-    } else if (!this.room && this.#canPublish()) {
+    if (room && this.#controls) {
+      this.#patchTimer(room.id, state);
+    } else if (!room && this.#canPublish()) {
       void this.#create(state);
     }
+  }
+
+  /** Send a timer change (null clears it), after any earlier one has been answered. */
+  #patchTimer(roomId: string, timer: TimerState | null) {
+    const d = this.#d;
+    const send = async () => {
+      try {
+        const room = await d.api.patchRoom(d.identity.token, roomId, { timer });
+        if (this.room?.id === room.id) {
+          this.#seenRev = Math.max(this.#seenRev, room.timerRev ?? 0);
+        }
+      } catch {
+        // the solo timer keeps working; the next change or event resyncs
+      } finally {
+        this.#patching--;
+      }
+    };
+    const idle = this.#patching === 0;
+    this.#patching++;
+    this.#patchingRoom = roomId;
+    this.#timerQueue = idle ? send() : this.#timerQueue.then(send);
   }
 
   async #create(state: TimerState) {
@@ -382,6 +442,7 @@ export class RoomsStore {
       }
       this.room = room;
       this.role = 'host';
+      this.#seenRev = room.timerRev ?? 0;
       this.#synced = sig(settings);
     } catch {
       // solo timer keeps working
@@ -411,6 +472,7 @@ export class RoomsStore {
     if (!visible) {
       if (this.#controls && this.room && this.room.members.length <= 1) {
         const id = this.room.id;
+        this.#leftRoom = id;
         this.room = null;
         this.role = null;
         d.api.leaveRoom(d.identity.token, id).catch(() => {});
@@ -441,6 +503,7 @@ export class RoomsStore {
     try {
       const room = await d.api.joinRoom(d.identity.token, roomId, { name: d.identity.name });
       this.error = null;
+      this.#leftRoom = null;
       this.#adopt(room, this.#roleIn(room));
     } catch (e) {
       if (this.role !== 'guest' && !hadSnapshot) save<OwnSettings | null>(SNAPSHOT_KEY, null);
@@ -454,6 +517,7 @@ export class RoomsStore {
     const d = this.#d;
     const room = this.room;
     if (this.joined && room) {
+      this.#leftRoom = room.id;
       try {
         await d.api.leaveRoom(d.identity.token, room.id);
       } catch {

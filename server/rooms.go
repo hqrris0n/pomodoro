@@ -18,6 +18,7 @@ const (
 	maxClients        = 2000 // streams + members + a little slack for rate records
 	gracePeriod       = 30 * time.Second
 	finishedRoomTTL   = 10 * time.Minute
+	idleRoomTTL       = 30 * time.Minute
 	rateWindow        = 10 * time.Second
 	rateLimit         = 20
 	streamBufferSize  = 16
@@ -65,8 +66,9 @@ type room struct {
 	id       string
 	seq      uint64 // creation order, for a stable list
 	settings Settings
-	timer    Timer
-	setAt    time.Time // when timer was last replaced (finish time of a paused, finished timer)
+	timer    *Timer    // nil while the host is choosing the next order
+	timerRev uint64    // bumped whenever timer is replaced or cleared
+	setAt    time.Time // when timer was last replaced or cleared (finish time of a paused, finished timer)
 	members  []*member // in join order; index 0 is the earliest joiner
 }
 
@@ -185,7 +187,16 @@ func (r *room) view() Room {
 	for i, m := range r.members {
 		ms[i] = Member{ID: m.c.id, Name: m.name, Role: m.role, JoinedAt: m.joinedAt}
 	}
-	return Room{ID: r.id, Settings: r.settings, Timer: r.timer, Members: ms}
+	return Room{ID: r.id, Settings: r.settings, Timer: r.timerView(), TimerRev: r.timerRev, Members: ms}
+}
+
+// timerView copies the timer so a view never aliases room state.
+func (r *room) timerView() *Timer {
+	if r.timer == nil {
+		return nil
+	}
+	t := *r.timer
+	return &t
 }
 
 func (r *room) hostName() string {
@@ -206,7 +217,7 @@ func (h *hub) summaries() []RoomSummary {
 	out := make([]RoomSummary, len(rs))
 	for i, r := range rs {
 		out[i] = RoomSummary{ID: r.id, OwnerName: r.hostName(), MemberCount: len(r.members),
-			DrinkID: r.settings.DrinkID, Timer: r.timer}
+			DrinkID: r.settings.DrinkID, Timer: r.timerView()}
 	}
 	return out
 }
@@ -446,7 +457,7 @@ func (h *hub) CreateRoom(token, name string, s Settings, t Timer) (Room, error) 
 	}
 	h.leaveLocked(c)
 	h.nextSeq++
-	r := &room{id: h.newRoomID(), seq: h.nextSeq, settings: s, timer: t, setAt: h.now()}
+	r := &room{id: h.newRoomID(), seq: h.nextSeq, settings: s, timer: &t, timerRev: 1, setAt: h.now()}
 	r.members = []*member{{c: c, name: name, role: roleHost, joinedAt: h.nowMs()}}
 	h.rooms[r.id] = r
 	c.roomID = r.id
@@ -500,23 +511,38 @@ func (h *hub) Leave(token, roomID string) error {
 	return nil
 }
 
-// Patch replaces the given parts of the room; host and co-hosts only. A nil part is kept.
-func (h *hub) Patch(token, roomID string, s *Settings, t *Timer) (Room, error) {
+// Patch replaces the given parts of the room; host and co-hosts only. A nil
+// part is kept. clearTimer removes the timer, leaving the room open while the
+// host picks the next order; only the host may clear the timer or start one in
+// a room that has none.
+func (h *hub) Patch(token, roomID string, s *Settings, t *Timer, clearTimer bool) (Room, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	c, err := h.clientLocked(token)
 	if err != nil {
 		return Room{}, err
 	}
-	r, err := h.ownerOf(c, roomID)
+	r, me, err := h.memberOf(c, roomID)
 	if err != nil {
 		return Room{}, err
+	}
+	if me.role == roleGuest {
+		return Room{}, errNotOwner
+	}
+	if me.role != roleHost && (clearTimer || (t != nil && r.timer == nil)) {
+		return Room{}, errNotHost
 	}
 	if s != nil {
 		r.settings = *s
 	}
-	if t != nil {
-		r.timer = *t
+	if t != nil || clearTimer {
+		if clearTimer {
+			r.timer = nil
+		} else {
+			v := *t
+			r.timer = &v
+		}
+		r.timerRev++
 		r.setAt = h.now()
 	}
 	h.touchAll(r)
@@ -638,9 +664,12 @@ func (h *hub) Rename(token, name string) error {
 
 // --- lifecycle ---
 
-// finishedAt returns when the room's timer completed, if it has.
+// finishedAt returns when the room's timer completed, if it has one and it has.
 func (h *hub) finishedAt(r *room) (time.Time, bool) {
-	t := r.timer
+	if r.timer == nil {
+		return time.Time{}, false
+	}
+	t := *r.timer
 	total := t.total()
 	if t.AnchorAt == nil {
 		return r.setAt, t.ElapsedMs >= total
@@ -648,24 +677,31 @@ func (h *hub) finishedAt(r *room) (time.Time, bool) {
 	return time.UnixMilli(*t.AnchorAt + total - t.ElapsedMs), true
 }
 
-// Sweep applies lifecycle rules 1 and 4: it deletes rooms finished for over
-// ten minutes, removes members whose grace period ran out, and forgets idle
-// clients (including their rate-limit records).
+// Sweep applies the lifecycle rules: it deletes rooms finished for over ten
+// minutes or without a timer for over thirty, removes members whose grace
+// period ran out, and forgets idle clients (including their rate-limit records).
 func (h *hub) Sweep() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	now := h.now()
 
 	for id, r := range h.rooms {
+		why := ""
 		if at, ok := h.finishedAt(r); ok && now.Sub(at) >= finishedRoomTTL {
-			for _, m := range r.members {
-				m.c.roomID = ""
-				m.c.notes = nil
-				h.dirty[m.c] = struct{}{}
-			}
-			delete(h.rooms, id)
-			h.logf("room %s removed (finished)", id)
+			why = "finished"
+		} else if r.timer == nil && now.Sub(r.setAt) >= idleRoomTTL {
+			why = "idle"
 		}
+		if why == "" {
+			continue
+		}
+		for _, m := range r.members {
+			m.c.roomID = ""
+			m.c.notes = nil
+			h.dirty[m.c] = struct{}{}
+		}
+		delete(h.rooms, id)
+		h.logf("room %s removed (%s)", id, why)
 	}
 	for _, c := range h.clients {
 		if c.conn == nil && c.roomID != "" && now.Sub(c.detachedAt) >= gracePeriod {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
@@ -179,14 +180,16 @@ func (a *api) leave(w http.ResponseWriter, r *http.Request, token string) error 
 }
 
 func (a *api) patch(w http.ResponseWriter, r *http.Request, token string) error {
+	// Timer stays raw to tell an absent timer (keep it) from null (clear it).
 	var in struct {
-		Settings *Settings `json:"settings"`
-		Timer    *timerIn  `json:"timer"`
+		Settings *Settings       `json:"settings"`
+		Timer    json.RawMessage `json:"timer"`
 	}
 	if err := decode(r, &in); err != nil {
 		return err
 	}
-	if in.Settings == nil && in.Timer == nil {
+	clearTimer := string(in.Timer) == "null"
+	if in.Settings == nil && len(in.Timer) == 0 {
 		return badRequest("nothing to change")
 	}
 	var s *Settings
@@ -198,14 +201,20 @@ func (a *api) patch(w http.ResponseWriter, r *http.Request, token string) error 
 		}
 		s = &v
 	}
-	if in.Timer != nil {
-		v, err := validateTimer(*in.Timer, a.h.nowMs())
+	if len(in.Timer) > 0 && !clearTimer {
+		var ti timerIn
+		dec := json.NewDecoder(bytes.NewReader(in.Timer))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&ti); err != nil {
+			return badRequest("invalid JSON body")
+		}
+		v, err := validateTimer(ti, a.h.nowMs())
 		if err != nil {
 			return err
 		}
 		t = &v
 	}
-	room, err := a.h.Patch(token, r.PathValue("id"), s, t)
+	room, err := a.h.Patch(token, r.PathValue("id"), s, t, clearTimer)
 	if err != nil {
 		return err
 	}

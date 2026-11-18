@@ -2,7 +2,15 @@ import type { Settings, TimerState } from '../types';
 
 export type Role = 'host' | 'cohost' | 'guest';
 export type Member = { id: string; name: string; role: Role; joinedAt: number };
-export type Room = { id: string; settings: Settings; timer: TimerState; members: Member[] };
+/** `timer` is null while the host is choosing the next order; `timerRev` grows with every timer change. */
+export type Room = {
+  id: string;
+  settings: Settings;
+  timer: TimerState | null;
+  timerRev?: number;
+  members: Member[];
+};
+/** A room someone can follow: one with a timer. */
 export type RoomSummary = {
   id: string;
   ownerName: string;
@@ -10,6 +18,8 @@ export type RoomSummary = {
   drinkId: string;
   timer: TimerState;
 };
+/** An entry of the `rooms` event, which also lists rooms between timers. */
+export type ListedRoom = Omit<RoomSummary, 'timer'> & { timer: TimerState | null };
 
 export class ApiError extends Error {
   readonly status: number;
@@ -64,7 +74,7 @@ export function leaveRoom(token: string, roomId: string): Promise<Record<string,
 export function patchRoom(
   token: string,
   roomId: string,
-  body: { settings?: Settings; timer?: TimerState },
+  body: { settings?: Settings; timer?: TimerState | null },
 ): Promise<Room> {
   return call(token, 'PATCH', `/rooms/${id(roomId)}`, body);
 }

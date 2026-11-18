@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import Setup from './screens/Setup.svelte';
   import Timer from './screens/Timer.svelte';
+  import Waiting from './screens/Waiting.svelte';
   import Background from './lib/backgrounds/Background.svelte';
   import SceneSelector from './lib/backgrounds/SceneSelector.svelte';
   import { backgrounds } from './lib/backgrounds/backgrounds.svelte';
@@ -17,8 +18,13 @@
   import { installAudioUnlock } from './lib/shell/unlock';
 
   // The timer screen shows whenever a timer exists: started here, restored
-  // after a reload, or mirrored from a timer this person joined.
-  const screen = $derived<'setup' | 'timer'>(timer.state !== null ? 'timer' : 'setup');
+  // after a reload, or mirrored from a timer this person joined. A guest or
+  // co-host whose host is choosing the next order waits instead of ordering.
+  const screen = $derived<'setup' | 'timer' | 'waiting'>(
+    timer.state !== null ? 'timer' : rooms.waiting ? 'waiting' : 'setup',
+  );
+  // The host (or a solo timer) restarts; guests and co-hosts leave.
+  const hosting = $derived(rooms.role !== 'guest' && rooms.role !== 'cohost');
   let settingsOpen = $state(false);
 
   const lockedBy = $derived(rooms.hostName ?? undefined);
@@ -26,10 +32,10 @@
     `You're following ${lockedBy ?? 'someone'}'s timer. Only host or co-host can change this.`,
   );
 
-  // Leaving someone else's timer restores this person's own settings;
-  // leaving their own timer just stops it.
+  // Leaving someone else's timer restores this person's own settings. The
+  // host restarting just stops the timer: the room stays open for the next one.
   function leave() {
-    if (rooms.joined) void rooms.leave();
+    if (rooms.joined && rooms.role !== 'host') void rooms.leave();
     else timer.stop();
   }
 
@@ -54,8 +60,10 @@
 <div class="stage">
   {#if screen === 'setup'}
     <Setup onstart={() => {}} />
+  {:else if screen === 'waiting'}
+    <Waiting host={rooms.roomHost} onleave={() => void rooms.leave()} />
   {:else}
-    <Timer onleave={leave} locked={rooms.locked} {lockedBy} />
+    <Timer onleave={leave} locked={rooms.locked} {lockedBy} {hosting} />
   {/if}
 </div>
 <NoteStack />

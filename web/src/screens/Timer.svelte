@@ -15,7 +15,8 @@
     onleave,
     locked = false,
     lockedBy,
-  }: { onleave: () => void; locked?: boolean; lockedBy?: string } = $props();
+    hosting = true,
+  }: { onleave: () => void; locked?: boolean; lockedBy?: string; hosting?: boolean } = $props();
 
   const view = $derived(timer.view);
   const drink = $derived(drinks.selected);
@@ -75,6 +76,7 @@
         onBreak={view.phase === 'break'}
         {locked}
         {lockedBy}
+        {hosting}
         onpause={() => timer.pause()}
         onresume={() => timer.resume()}
         onskip={() => timer.skipBreak()}

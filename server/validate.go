@@ -31,10 +31,13 @@ type Member struct {
 	JoinedAt int64  `json:"joinedAt"`
 }
 
+// Room.Timer and RoomSummary.Timer are null while the host is choosing the
+// next order. TimerRev increases every time the timer is replaced or cleared.
 type Room struct {
 	ID       string   `json:"id"`
 	Settings Settings `json:"settings"`
-	Timer    Timer    `json:"timer"`
+	Timer    *Timer   `json:"timer"`
+	TimerRev uint64   `json:"timerRev"`
 	Members  []Member `json:"members"`
 }
 
@@ -43,7 +46,7 @@ type RoomSummary struct {
 	OwnerName   string `json:"ownerName"`
 	MemberCount int    `json:"memberCount"`
 	DrinkID     string `json:"drinkId"`
-	Timer       Timer  `json:"timer"`
+	Timer       *Timer `json:"timer"`
 }
 
 // Note is the payload of the `note` SSE event.

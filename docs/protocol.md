@@ -47,16 +47,23 @@ type Settings = {
   mix: Record<string, number>;     // channel id -> volume 0..1, <= 16 keys
 };
 type Member = { id: string; name: string; role: 'host' | 'cohost' | 'guest'; joinedAt: number };
-type Room = { id: string; settings: Settings; timer: TimerState; members: Member[] };
+type Room = {
+  id: string; settings: Settings;
+  timer: TimerState | null; // null between timers, see below
+  timerRev: number;         // starts at 1, +1 every time the timer is replaced or cleared
+  members: Member[];
+};
 type RoomSummary = {
-  id: string; ownerName: string; memberCount: number; drinkId: string; timer: TimerState;
+  id: string; ownerName: string; memberCount: number; drinkId: string;
+  timer: TimerState | null;
 };
 ```
 
-Roles: the **host** is whoever started the timer, a **co-host** can control
-the timer and settings like the host, and a **guest** is read-only. A room has
-exactly one host at all times. Only the host changes other members between
-co-host and guest. New joiners are guests.
+Roles: the **host** is whoever created the room (or was promoted, see
+lifecycle rule 2), a **co-host** can control the timer and settings like the
+host, and a **guest** is read-only. A room has exactly one host at all times.
+Only the host changes other members between co-host and guest, clears the
+timer, or starts a timer in a room that has none. New joiners are guests.
 
 A client is in at most one room. Master volume, mute and todos are never sent.
 A client whose "show my timer to others" setting is off does not create a
@@ -70,7 +77,7 @@ room at all.
 | `POST /rooms`                 | anyone  | `{name, settings, timer}`         | Leaves any current room, creates a room with the caller as host. Returns `Room`. |
 | `POST /rooms/{id}/join`       | anyone  | `{name}`                          | Leaves any current room, joins as guest. Returns `Room`. |
 | `POST /rooms/{id}/leave`      | member  | —                                 | Leaves. |
-| `PATCH /rooms/{id}`           | host, co-host | `{settings?, timer?}`             | Replaces the given parts. |
+| `PATCH /rooms/{id}`           | host, co-host | `{settings?, timer?}`             | Replaces the given parts. `timer: null` clears the timer (host only). |
 | `POST /rooms/{id}/role`       | host    | `{memberId, role}`                | Sets that member's role to `"cohost"` or `"guest"`. The host's own role cannot change (400); an unknown member is 404. |
 | `POST /rooms/{id}/notes`      | member  | `{to, text}`                      | Sends a sticky note to another member of the room. Returns `202 {id}`. |
 | `PUT /me`                     | anyone  | `{name}`                          | Renames the caller in their room. |
@@ -82,6 +89,8 @@ to the name given on the stream. `PUT /me` while in no room is a 403 (the name
 is sent again with the next create or join). Joining the room you are already
 in returns it unchanged.
 
+In `PATCH`, a missing `timer` keeps the timer and `"timer": null` clears it;
+`timerRev` changes only when the timer is replaced or cleared.
 `timer.anchorAt` sent by a client is treated as a boolean: non-null means
 "running", and the server replaces it with its own `now`. Errors are
 `{error: string}` with 400 (invalid), 403 (not a host or co-host / not the host for `role` / not a member),
@@ -98,6 +107,29 @@ in returns it unchanged.
 - `note` — `{id, roomId, fromId, fromName, text, sentAt}` (`sentAt` is server
   epoch ms). A sticky note sent to the caller; see below.
 - A comment line `: ping` every 25s to keep proxies from closing the stream.
+
+## Between timers
+
+A room outlives its timers, so the people following a host stay with them
+from one order to the next.
+
+1. The host clears the timer with `PATCH {timer: null}` (Restart, or Another
+   round when the drink is done). The room keeps its id, members, roles and
+   settings; nobody is promoted. A co-host or guest doing this gets 403.
+2. While `timer` is null, members get the usual `room` events and the room
+   stays in the `rooms` list with `timer: null`. Settings can still be
+   patched by the host and co-hosts.
+3. The host starts the next timer with `PATCH {timer}` on the same room
+   (`POST /rooms` would leave it and create a new one). Every member's next
+   `room` event carries the new timer. A co-host starting a timer in a room
+   with no timer gets 403; once a timer exists, co-hosts can change it as
+   before.
+4. A room that has had no timer for 30 minutes is deleted (lifecycle rule 5).
+   Settings changes do not extend this.
+
+`timerRev` lets a client tell a stale view from a fresh one: events and
+`PATCH` responses can reach a client in either order, so a client that has
+seen revision *n* ignores the timer in any view with a lower `timerRev`.
 
 ## Sticky notes
 
@@ -180,11 +212,14 @@ untouched and answers every `/profiles` request with 503
    have a 30s grace period to reconnect, then they are removed.
 2. When the host leaves or is removed, the co-host with the earliest
    `joinedAt` becomes host; if there is no co-host, the guest with the earliest
-   `joinedAt`. The timer is untouched.
+   `joinedAt`. The timer is untouched, including a cleared one: the new host
+   orders the next timer. Clearing the timer is not leaving.
 3. A room with no members is deleted.
 4. A room whose timer has been done for 10 minutes is deleted; its members
    receive `room: null`.
-5. Limits: 50 rooms, 20 members per room, names 1–24 chars after trimming,
+5. A room whose timer has been cleared for 30 minutes is deleted; its members
+   receive `room: null`.
+6. Limits: 50 rooms, 20 members per room, names 1–24 chars after trimming,
    request bodies ≤ 4 KB, at most 20 commands per 10s per token.
 
 ## Client behaviour
@@ -194,8 +229,18 @@ untouched and answers every `/profiles` request with 503
 - Guest: local engine and settings are overwritten by each `room` event and
   all controls for timer, drink, background and mix are disabled. On leaving,
   the guest's own saved drink, background and mix are restored.
-- When the timer is done: a host or co-host choosing "Same again" patches a fresh timer
-  for everyone still present; anyone choosing "Another round" leaves the room
-  and returns to setup.
+- Host and co-host send timer patches one at a time, each after the previous
+  one is answered, so the server applies them in order. While one is in
+  flight, and for views older than the newest `timerRev` seen, the local
+  timer is kept. A client also ignores `room` events for a room it has just
+  left until it sees `room: null` or another room.
+- The host's Restart (while running) and Another round (when done) clear the
+  timer and return the host to the order ticket, still in the room; Start
+  brewing then patches the new timer into it. Same again (host or co-host)
+  patches a fresh timer.
+- Guests and co-hosts: Leave (or Another round / Back to my own timer) leaves
+  the room. While the room has no timer they see a waiting screen with a
+  Leave button and cannot order; the next timer takes over automatically.
+  Rooms with no timer are not offered in the list of timers to join.
 - If the server is unreachable the app behaves as a solo timer and retries
   the stream with backoff (2s doubling to 30s).

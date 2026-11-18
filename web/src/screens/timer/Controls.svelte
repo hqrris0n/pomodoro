@@ -5,6 +5,7 @@
     onBreak = false,
     locked,
     lockedBy,
+    hosting = true,
     onpause,
     onresume,
     onskip,
@@ -16,6 +17,8 @@
     onBreak?: boolean;
     locked: boolean;
     lockedBy?: string;
+    /** True for the host or a solo timer: the button restarts instead of leaving. */
+    hosting?: boolean;
     onpause: () => void;
     onresume: () => void;
     onskip: () => void;
@@ -27,7 +30,7 @@
   let leaveButton = $state<HTMLButtonElement>();
   let stayButton = $state<HTMLButtonElement>();
 
-  const leaveLabel = $derived(locked ? 'Stop following' : 'Leave');
+  const leaveLabel = $derived(hosting && !locked ? 'Restart' : 'Leave');
 
   function ask() {
     confirming = true;
@@ -68,7 +71,7 @@
     </div>
   {:else if confirming}
     <div class="row confirm">
-      <p class="ask">{locked ? 'Stop following?' : 'Leave this timer?'}</p>
+      <p class="ask">{leaveLabel} this timer?</p>
       <button type="button" class="btn" onclick={onleave}>{leaveLabel}</button>
       <button type="button" class="btn" bind:this={stayButton} onclick={stay}>Stay</button>
     </div>
