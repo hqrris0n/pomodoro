@@ -159,7 +159,7 @@ describe('ClocksMenu', () => {
     });
     openMenu(store);
     expect(screen.queryByRole('button', { name: 'Promote' })).toBeNull();
-    await fireEvent.click(screen.getByRole('button', { name: 'Stop following' }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Leave' }));
     expect(store.leave).toHaveBeenCalledOnce();
   });
 

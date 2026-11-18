@@ -161,7 +161,7 @@
   {#if open}
     <div class="panel menu" id={panelId} role="region" aria-label="Other timers">
       {#if showMembers}
-        <section>
+        <section class="mine">
           <h2>In this timer</h2>
           <ul>
             {#each members as m (m.id)}
@@ -232,9 +232,7 @@
           </ul>
           {#if sentTo}<p class="quiet" role="status">Note sent</p>{/if}
           {#if store.joined}
-            <button type="button" class="btn small follow" onclick={stopFollowing}>
-              Stop following
-            </button>
+            <button type="button" class="btn small follow" onclick={stopFollowing}> Leave </button>
           {/if}
         </section>
       {/if}
@@ -343,8 +341,17 @@
     padding: var(--s1) 0;
   }
 
-  li + li {
+  .room + .room {
     border-top: var(--px) solid var(--ink);
+  }
+
+  .member + .member {
+    border-top: 1px dotted var(--ink);
+  }
+
+  .mine {
+    padding-bottom: var(--s2);
+    border-bottom: var(--px) solid var(--ink);
   }
 
   .room {
