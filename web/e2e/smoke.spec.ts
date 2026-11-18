@@ -224,3 +224,25 @@ test('signing in from the Order-for card creates a user and saves settings to it
   await page.reload();
   await expect(page.getByRole('textbox', { name: 'Username' })).toHaveValue('Ada');
 });
+
+test('a saved mix in Settings loads from its name and opens its background picker', async ({
+  page,
+}) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Settings' }).click();
+
+  const name = page.getByRole('button', { name: 'Rainy day', exact: true });
+  const pic = page.getByRole('button', { name: 'Backgrounds for Rainy day' });
+  await name.click();
+  await expect(name).toHaveAttribute('aria-pressed', 'true');
+
+  await pic.click();
+  const picker = page.getByRole('group', { name: 'Backgrounds for Rainy day' });
+  await expect(picker).toBeInViewport({ ratio: 1 });
+  await expect(picker.getByText('Start this mix when the background changes to:')).toBeVisible();
+  await picker.getByRole('checkbox').first().click();
+  await expect(picker).toBeVisible();
+
+  await pic.click();
+  await expect(picker).toBeHidden();
+});

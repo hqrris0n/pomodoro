@@ -386,7 +386,9 @@
     color: var(--ink);
     border-width: 0 0 0 var(--px);
     box-shadow: none;
-    animation: slide-in 160ms steps(4) both;
+    /* `backwards`, not `both`: a held transform would make this the containing block
+       of position:fixed descendants (the Mixer's background picker). */
+    animation: slide-in 160ms steps(4) backwards;
   }
 
   @keyframes slide-in {
