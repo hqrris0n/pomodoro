@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 
-test('one click starts a timer; leaving returns to the order ticket', async ({ page }) => {
+test('one click starts a timer; restarting returns to the order ticket', async ({ page }) => {
   await page.goto('/');
   await expect(page.getByRole('heading', { name: 'Your order' })).toBeVisible();
 
@@ -15,9 +15,9 @@ test('one click starts a timer; leaving returns to the order ticket', async ({ p
   await page.reload();
   await expect(page.getByRole('button', { name: 'Resume' })).toBeVisible();
 
-  await page.getByRole('button', { name: 'Leave' }).click();
-  await expect(page.getByText('Leave this timer?')).toBeVisible();
-  await page.getByRole('button', { name: 'Leave' }).click();
+  await page.getByRole('button', { name: 'Restart' }).click();
+  await expect(page.getByText('Restart this timer?')).toBeVisible();
+  await page.getByRole('button', { name: 'Restart' }).click();
   await expect(page.getByRole('heading', { name: 'Your order' })).toBeVisible();
 });
 
@@ -141,8 +141,8 @@ test.describe('timer layout', () => {
           () => document.documentElement.scrollHeight <= window.innerHeight,
         );
         expect(fits).toBe(true);
-        await page.getByRole('button', { name: 'Leave' }).click();
-        await page.getByRole('button', { name: 'Leave' }).click();
+        await page.getByRole('button', { name: 'Restart' }).click();
+        await page.getByRole('button', { name: 'Restart' }).click();
       }
     });
 

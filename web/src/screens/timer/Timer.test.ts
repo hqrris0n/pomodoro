@@ -41,7 +41,7 @@ const stateOf = (over: Partial<TimerState> = {}): TimerState => ({
 
 const scene = () => screen.getByTestId('scene');
 
-async function mountTimer(props: { locked?: boolean; lockedBy?: string } = {}) {
+async function mountTimer(props: { locked?: boolean; lockedBy?: string; hosting?: boolean } = {}) {
   const onleave = vi.fn();
   render(Timer, { onleave, ...props });
   await vi.waitFor(() => expect(screen.queryByTestId('scene')).not.toBeNull());
@@ -111,24 +111,36 @@ describe('Timer screen', () => {
     expect(scene()).toHaveAttribute('data-mode', 'paused');
   });
 
-  it('confirms before leaving, and leaving does not stop the timer', async () => {
+  it('confirms before the host restarts, and hands the restart to the parent', async () => {
     timer.apply(stateOf());
     const onleave = await mountTimer();
-    await fireEvent.click(screen.getByRole('button', { name: 'Leave' }));
-    expect(screen.getByText('Leave this timer?')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Leave' })).toBeNull();
+    await fireEvent.click(screen.getByRole('button', { name: 'Restart' }));
+    expect(screen.getByText('Restart this timer?')).toBeInTheDocument();
     await fireEvent.click(screen.getByRole('button', { name: 'Stay' }));
     expect(screen.getByRole('button', { name: 'Pause' })).toBeInTheDocument();
 
-    await fireEvent.click(screen.getByRole('button', { name: 'Leave' }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Restart' }));
     await fireEvent.keyDown(window, { key: 'Escape' });
     expect(screen.getByRole('button', { name: 'Pause' })).toBeInTheDocument();
     expect(onleave).not.toHaveBeenCalled();
 
     const stop = vi.spyOn(timer, 'stop');
-    await fireEvent.click(screen.getByRole('button', { name: 'Leave' }));
-    await fireEvent.click(screen.getByRole('button', { name: 'Leave' }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Restart' }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Restart' }));
     expect(onleave).toHaveBeenCalledTimes(1);
     expect(stop).not.toHaveBeenCalled();
+  });
+
+  it('offers a co-host Leave, not Restart, with its own confirmation', async () => {
+    timer.apply(stateOf());
+    const onleave = await mountTimer({ hosting: false });
+    expect(screen.getByRole('button', { name: 'Pause' })).toBeEnabled();
+    expect(screen.queryByRole('button', { name: 'Restart' })).toBeNull();
+    await fireEvent.click(screen.getByRole('button', { name: 'Leave' }));
+    expect(screen.getByText('Leave this timer?')).toBeInTheDocument();
+    await fireEvent.click(screen.getByRole('button', { name: 'Leave' }));
+    expect(onleave).toHaveBeenCalledTimes(1);
   });
 
   it('shows rounds and the break, and chimes once at the switch', async () => {
@@ -189,7 +201,10 @@ describe('Timer screen', () => {
     await mountTimer({ locked: true, lockedBy: 'Mocha Otter' });
     expect(screen.getByRole('button', { name: 'Pause' })).toBeDisabled();
     expect(screen.getByText("Following Mocha Otter's timer")).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Stop following' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Restart' })).toBeNull();
+    await fireEvent.click(screen.getByRole('button', { name: 'Leave' }));
+    expect(screen.getByText('Leave this timer?')).toBeInTheDocument();
+    await fireEvent.click(screen.getByRole('button', { name: 'Stay' }));
 
     timer.apply(stateOf({ elapsedMs: 25 * MIN }));
     await tick();
