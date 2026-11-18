@@ -83,7 +83,7 @@
     align-items: flex-start;
     justify-content: space-between;
     gap: var(--s2);
-    margin: calc(-1 * (var(--s5) + var(--s1))) calc(-1 * (var(--s3) + var(--s1))) 0 0;
+    margin: calc(-1 * (var(--s5) + var(--s1))) calc(-1 * (var(--s4) + var(--s1))) 0 0;
   }
 
   h1 {
@@ -118,6 +118,11 @@
   }
 
   @media (min-width: 900px) {
+    /* More room beside the ticket here, so the card hangs further past its edge. */
+    .head {
+      margin-right: calc(-1 * (var(--s5) + var(--s1)));
+    }
+
     .clock-half {
       position: fixed;
       top: var(--topbar-height);

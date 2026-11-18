@@ -142,13 +142,13 @@
     box-shadow: var(--shadow);
   }
 
-  /* Clipped to the corner of the ticket: sits on the card's left half, pokes above it,
+  /* Clipped to the corner of the ticket: sits on the card's right half, pokes above it,
      and leans the other way from the card. The inner wire is drawn behind the card
      (.back), the outer wire in front of it (.front), so it appears to hold both papers. */
   .clip {
     position: absolute;
     top: calc(var(--px) * -9);
-    left: var(--s3);
+    right: var(--s3);
     fill: var(--dusk);
     transform: rotate(16deg);
     transform-origin: 50% calc(var(--px) * 9);
