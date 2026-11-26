@@ -657,3 +657,104 @@ func TestPasswordLength(t *testing.T) {
 	wantAPIErr(t, errPasswordShort, 400, "Password must be at least 8 characters.")
 	wantAPIErr(t, errPasswordLong, 400, "Password must be at most 72 characters.")
 }
+
+func (e *testEnv) changePassword(t *testing.T, cookie, current, next string) acctResp {
+	t.Helper()
+	return e.send(t, acctReq{method: "PUT", path: "/api/account/password", cookie: cookie, body: map[string]any{"current": current, "new": next}})
+}
+
+func TestChangePasswordRotatesSession(t *testing.T) {
+	e := newEnv(t)
+	old := cookiePair(e.signup(t, "ada", "hunter22").setCookie)
+	r := e.changePassword(t, old, "hunter22", "newpass99")
+	fresh := cookiePair(r.setCookie)
+	if r.code != 200 || r.body != "{}\n" || !strings.HasPrefix(fresh, "cafe_session=") || fresh == old {
+		t.Fatalf("change: %d %s %q", r.code, r.body, r.setCookie)
+	}
+	if a := e.account(t, old); a.code != 401 || a.body != `{"error":"Not signed in."}`+"\n" {
+		t.Fatalf("old cookie: %d %s", a.code, a.body)
+	}
+	if a := e.account(t, fresh); a.code != 200 {
+		t.Fatalf("new cookie: %d %s", a.code, a.body)
+	}
+	if l := e.login(t, "ada", "hunter22"); l.code != 401 || l.body != `{"error":"Wrong username or password."}`+"\n" {
+		t.Fatalf("login with old password: %d %s", l.code, l.body)
+	}
+	if l := e.login(t, "ada", "newpass99"); l.code != 200 {
+		t.Fatalf("login with new password: %d %s", l.code, l.body)
+	}
+}
+
+func TestChangePasswordRejections(t *testing.T) {
+	e := newEnv(t)
+	cookie := cookiePair(e.signup(t, "ada", "hunter22").setCookie)
+	cases := []struct {
+		name, current, next string
+		code                int
+		msg                 string
+	}{
+		{"wrong current", "wrongpass1", "newpass99", 401, "Wrong password."},
+		{"short new", "hunter22", strings.Repeat("a", 7), 400, "Password must be at least 8 characters."},
+		{"long new", "hunter22", strings.Repeat("a", 73), 400, "Password must be at most 72 characters."},
+	}
+	for _, c := range cases {
+		r := e.changePassword(t, cookie, c.current, c.next)
+		if r.code != c.code || r.body != `{"error":"`+c.msg+`"}`+"\n" || r.setCookie != "" {
+			t.Errorf("%s: %d %s %q", c.name, r.code, r.body, r.setCookie)
+		}
+	}
+	if a := e.account(t, cookie); a.code != 200 {
+		t.Fatalf("session changed: %d", a.code)
+	}
+	if l := e.login(t, "ada", "hunter22"); l.code != 200 {
+		t.Fatalf("password changed: %d %s", l.code, l.body)
+	}
+}
+
+func TestChangePasswordNeedsValidSession(t *testing.T) {
+	e := newEnv(t)
+	e.signup(t, "ada", "hunter22")
+	for name, c := range map[string]string{"none": "", "dead": "cafe_session=" + strings.Repeat("0", 64)} {
+		r := e.changePassword(t, c, "hunter22", "newpass99")
+		if r.code != 401 || r.body != `{"error":"Not signed in."}`+"\n" || r.setCookie != "" {
+			t.Errorf("%s: %d %s", name, r.code, r.body)
+		}
+	}
+	if l := e.login(t, "ada", "hunter22"); l.code != 200 {
+		t.Fatalf("password changed: %d", l.code)
+	}
+}
+
+// The device keeps its link and room: the new session is the same device's,
+// so nothing is revoked or handed over.
+func TestChangePasswordKeepsDeviceLinkAndRoom(t *testing.T) {
+	e := newEnv(t)
+	cookie := cookiePair(e.signup(t, "ada", "hunter22").setCookie)
+	body, _ := json.Marshal(createBody(nil))
+	c := e.send(t, acctReq{method: "POST", path: "/api/rooms", body: string(body)})
+	var room Room
+	if c.code != 200 || json.Unmarshal([]byte(c.body), &room) != nil {
+		t.Fatalf("create room: %d %s", c.code, c.body)
+	}
+	cn, err := e.h.Connect(ptok, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	drain(cn)
+	if r := e.changePassword(t, cookie, "hunter22", "newpass99"); r.code != 200 {
+		t.Fatalf("change: %d %s", r.code, r.body)
+	}
+	if evs := drain(cn); len(evs) != 0 {
+		t.Fatalf("device got %v", namesOf(evs))
+	}
+	if got, _ := e.h.room(room.ID); roleOf(got, ptok) != roleHost {
+		t.Fatalf("members %+v", got.Members)
+	}
+	// Still linked at the new gen: a later login elsewhere revokes this device.
+	if l := e.send(t, acctReq{method: "POST", path: "/api/auth/login", token: tok(78), body: map[string]any{"username": "ada", "password": "newpass99"}}); l.code != 200 {
+		t.Fatalf("login: %d %s", l.code, l.body)
+	}
+	if evs := drain(cn); len(evs) == 0 || evs[0].name != "session" {
+		t.Fatalf("after other login: %v", namesOf(evs))
+	}
+}

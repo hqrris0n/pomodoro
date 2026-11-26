@@ -473,3 +473,40 @@ func (a *api) deleteAccount(w http.ResponseWriter, r *http.Request, device strin
 	writeJSON(w, 200, struct{}{})
 	return nil
 }
+
+func (a *api) changePassword(w http.ResponseWriter, r *http.Request, device string) error {
+	if err := a.profilesOn(); err != nil {
+		return err
+	}
+	if err := a.lim.attemptIP(clientIP(r, a.trustProxy)); err != nil {
+		return err
+	}
+	token := sessionToken(r)
+	p, _, err := a.p.Lookup(token)
+	if err != nil {
+		return err
+	}
+	var in struct {
+		Current string `json:"current"`
+		New     string `json:"new"`
+	}
+	if err := decode(r, &in); err != nil {
+		return err
+	}
+	if err := a.lim.blockedUser(p.Username); err != nil {
+		return err
+	}
+	g, err := a.p.ChangePassword(token, in.Current, in.New)
+	if err != nil {
+		if err == error(errWrongPassword) {
+			a.lim.failUser(p.Username)
+		}
+		return err
+	}
+	// After the store call, never under its lock (see handover.go). The
+	// device is already linked, so this only moves the link to the new gen.
+	a.h.ClaimAccount(g.Profile.Username, g.Gen, device, g.Replaced)
+	startSession(w, g.Token)
+	writeJSON(w, 200, struct{}{})
+	return nil
+}

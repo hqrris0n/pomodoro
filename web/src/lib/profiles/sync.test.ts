@@ -55,6 +55,11 @@ function fakeApi() {
       db.delete(session!);
       session = null;
     }),
+    changePassword: vi.fn(async (_t: string, body: { current: string; new: string }) => {
+      const p = signedIn();
+      if (p.password !== body.current) throw new ProfileError(401, 'Wrong password.');
+      p.password = body.new;
+    }),
   } satisfies ProfilesApi;
   /** Another device logs in: this one's session dies. */
   const revokeSession = () => {
@@ -482,6 +487,56 @@ describe('ProfileSync', () => {
       expect(db.size).toBe(0);
       expect(sync.current).toBeNull();
       expect(load('drink', null)).toBe('matcha');
+    });
+  });
+
+  describe('changing the password', () => {
+    it('checks the boxes locally and sends nothing when they fail', async () => {
+      const { api } = fakeApi();
+      const sync = make(api);
+      await sync.signUp('Ada', PW);
+      expect(await sync.changePassword(PW, '1234567')).toBe(
+        'Password must be at least 8 characters.',
+      );
+      expect(await sync.changePassword('', 'newpass99')).toBe('Enter your current password.');
+      expect(api.changePassword).not.toHaveBeenCalled();
+    });
+
+    it('a wrong current password changes nothing; the right one changes it and stays logged in', async () => {
+      const { api, db } = fakeApi();
+      const sync = make(api);
+      await sync.signUp('Ada', PW);
+      expect(await sync.changePassword('wrong-pass', 'newpass99')).toBe('Wrong password.');
+      expect(db.get('ada')!.password).toBe(PW);
+      expect(await sync.changePassword(PW, 'newpass99')).toBeNull();
+      expect(api.changePassword).toHaveBeenLastCalledWith(TOKEN, {
+        current: PW,
+        new: 'newpass99',
+      });
+      expect(db.get('ada')!.password).toBe('newpass99');
+      expect(sync.current).toBe('Ada');
+    });
+
+    it('logs out locally with a notice when the session is gone', async () => {
+      const { api, revokeSession } = fakeApi();
+      const sync = make(api);
+      await sync.signUp('Ada', PW);
+      revokeSession();
+      expect(await sync.changePassword(PW, 'newpass99')).toBe('You were logged in somewhere else.');
+      expect(sync.current).toBeNull();
+      expect(sync.notice).toBe('You were logged in somewhere else.');
+    });
+
+    it('sends PUT /api/account/password with {current, new}', async () => {
+      const fetchMock = vi.fn(async () => new Response('{}'));
+      vi.stubGlobal('fetch', fetchMock);
+      const { realApi } = await import('./api');
+      await realApi.changePassword(TOKEN, { current: PW, new: 'newpass99' });
+      const [url, init] = (fetchMock.mock.calls as unknown as [string, RequestInit][])[0];
+      expect(url).toBe('/api/account/password');
+      expect(init.method).toBe('PUT');
+      expect(JSON.parse(init.body as string)).toEqual({ current: PW, new: 'newpass99' });
+      vi.unstubAllGlobals();
     });
   });
 

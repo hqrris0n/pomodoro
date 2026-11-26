@@ -509,6 +509,25 @@ export class ProfileSync {
     this.#forget();
     return null;
   }
+
+  /** Change the logged-in account's password. Returns an error message, or null. */
+  async changePassword(current: string, next: string): Promise<string | null> {
+    if (!current) return 'Enter your current password.';
+    const invalid = passwordError(next);
+    if (invalid) return invalid;
+    const token = this.#token();
+    if (!token) return UNREACHABLE;
+    try {
+      await this.#d.api.changePassword(token, { current, new: next });
+    } catch (e) {
+      if (e instanceof ProfileError && e.status === 401 && /signed in/i.test(e.message)) {
+        this.revoked();
+        return ELSEWHERE;
+      }
+      return errorText(e);
+    }
+    return null;
+  }
 }
 
 export const profileSync = new ProfileSync({

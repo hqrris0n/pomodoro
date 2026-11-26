@@ -77,6 +77,19 @@ export class ProfilesStore {
       this.busy = false;
     }
   }
+
+  /** Returns an error message, or null (changed; this device stays logged in). */
+  async changePassword(current: string, next: string): Promise<string | null> {
+    if (this.busy) return null;
+    this.busy = true;
+    try {
+      const err = await this.#sync.changePassword(current, next);
+      this.#pull();
+      return err;
+    } finally {
+      this.busy = false;
+    }
+  }
 }
 
 export const profiles = new ProfilesStore(profileSync, realIdentity);

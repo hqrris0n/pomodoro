@@ -144,3 +144,33 @@ func TestLimiterFailsClosedWhenFull(t *testing.T) {
 		t.Fatalf("%d keys after sweep, want 1", len(l.ips))
 	}
 }
+
+func TestWrongPasswordOnChangeCountsAsFailure(t *testing.T) {
+	e := limitedEnv(t, apiOptions{})
+	cookie := cookiePair(e.signup(t, "ada", "hunter22").setCookie)
+	for i := range 5 {
+		if r := e.changePassword(t, cookie, "wrongpass1", "newpass99"); r.code != 401 {
+			t.Fatalf("failure %d: %d", i, r.code)
+		}
+	}
+	r := e.changePassword(t, cookie, "hunter22", "newpass99")
+	if r.code != 429 || r.body != `{"error":"Too many attempts. Wait a minute and try again."}`+"\n" || r.setCookie != "" {
+		t.Fatalf("change while locked: %d %s", r.code, r.body)
+	}
+	if l := e.login(t, "ada", "hunter22"); l.code != 429 {
+		t.Fatalf("login while locked: %d", l.code)
+	}
+}
+
+func TestChangePasswordCountsTowardIPCap(t *testing.T) {
+	e := limitedEnv(t, apiOptions{ipAttempts: 3})
+	cookie := cookiePair(e.signup(t, "ada", "hunter22").setCookie) // attempt 1
+	for i := range 2 {
+		if r := e.changePassword(t, cookie, "hunter22", "short"); r.code != 400 {
+			t.Fatalf("attempt %d: %d", i+2, r.code)
+		}
+	}
+	if r := e.changePassword(t, cookie, "hunter22", "newpass99"); r.code != 429 {
+		t.Fatalf("fourth attempt: %d %s", r.code, r.body)
+	}
+}

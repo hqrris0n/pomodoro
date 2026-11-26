@@ -33,6 +33,7 @@ export type ProfilesApi = {
     body: { displayName: string; settings: Settings },
   ): Promise<{ updatedAt: number }>;
   remove(token: string, password: string): Promise<void>;
+  changePassword(token: string, body: { current: string; new: string }): Promise<void>;
 };
 
 const TIMEOUT_MS = 8000;
@@ -79,5 +80,8 @@ export const realApi: ProfilesApi = {
   put: (token, body) => call(token, 'PUT', '/api/account', body),
   async remove(token, password) {
     await call(token, 'DELETE', '/api/account', { password });
+  },
+  async changePassword(token, body) {
+    await call(token, 'PUT', '/api/account/password', body);
   },
 };

@@ -33,6 +33,7 @@ func newAPI(h *hub, p *profileStore, o apiOptions) http.Handler {
 	mux.HandleFunc("GET /api/account", a.command(a.getAccount))
 	mux.HandleFunc("PUT /api/account", a.commandLimit(profileBodyBytes, a.putAccount))
 	mux.HandleFunc("DELETE /api/account", a.command(a.deleteAccount))
+	mux.HandleFunc("PUT /api/account/password", a.command(a.changePassword))
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, 404, map[string]string{"error": "not found"})
 	})

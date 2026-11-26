@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/svelte';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { backgrounds } from '../backgrounds/backgrounds.svelte';
 import { clock } from '../clock/clock.svelte';
@@ -42,6 +42,52 @@ describe('SettingsPanel', () => {
     expect(screen.queryByRole('button', { name: 'Log out' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Delete account' })).toBeNull();
     expect(screen.queryByLabelText('Password')).toBeNull();
+    expect(screen.queryByLabelText('Current password')).toBeNull();
+    expect(screen.queryByLabelText('New password')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Save' })).toBeNull();
+  });
+
+  it('puts the change-password form in the You section before Log out', () => {
+    profiles.current = 'Ada';
+    render(SettingsPanel, { open: true });
+    const you = screen.getByRole('heading', { name: 'You' }).closest('section')!;
+    const save = within(you).getByRole('button', { name: 'Save' });
+    expect(within(you).getByLabelText('Current password')).toBeInTheDocument();
+    expect(within(you).getByLabelText('New password')).toBeInTheDocument();
+    const logOut = within(you).getByRole('button', { name: 'Log out' });
+    expect(save.compareDocumentPosition(logOut) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('keeps the boxes and shows the error when the password change fails', async () => {
+    const change = vi.spyOn(profiles, 'changePassword').mockResolvedValue('Wrong password.');
+    profiles.current = 'Ada';
+    render(SettingsPanel, { open: true });
+    await fireEvent.input(screen.getByLabelText('Current password'), { target: { value: 'nope' } });
+    await fireEvent.input(screen.getByLabelText('New password'), {
+      target: { value: 'newpass99' },
+    });
+    await fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(change).toHaveBeenCalledWith('nope', 'newpass99');
+    expect(await screen.findByRole('alert')).toHaveTextContent('Wrong password.');
+    expect(screen.getByLabelText('Current password')).toHaveValue('nope');
+    expect(screen.getByLabelText('New password')).toHaveValue('newpass99');
+    expect(screen.getByText('Logged in as Ada')).toBeInTheDocument();
+  });
+
+  it('clears both boxes and says so when the password is changed', async () => {
+    vi.spyOn(profiles, 'changePassword').mockResolvedValue(null);
+    profiles.current = 'Ada';
+    render(SettingsPanel, { open: true });
+    await fireEvent.input(screen.getByLabelText('Current password'), {
+      target: { value: 'hunter22' },
+    });
+    await fireEvent.input(screen.getByLabelText('New password'), {
+      target: { value: 'newpass99' },
+    });
+    await fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(await screen.findByRole('status')).toHaveTextContent('Password changed.');
+    expect(screen.getByLabelText('Current password')).toHaveValue('');
+    expect(screen.getByLabelText('New password')).toHaveValue('');
   });
 
   it('shows who is logged in and logs out', async () => {

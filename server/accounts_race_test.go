@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -438,5 +439,121 @@ func TestReplacedOnlyOverLiveSession(t *testing.T) {
 	clk.Advance(sessionTTL)
 	if login().Replaced {
 		t.Fatal("login after expiry: Replaced true")
+	}
+}
+
+const racePW2 = "brand new pw"
+
+func cookieValid(srv *httptest.Server, dev int, cookie string) bool {
+	return fire(srv, "GET", "/api/account", "", raceBearer(dev), cookie).Status == http.StatusOK
+}
+
+func loginStatus(srv *httptest.Server, dev int, pw string) int {
+	return fire(srv, "POST", "/api/auth/login", `{"username":"ada","password":"`+pw+`"}`, raceBearer(dev), "").Status
+}
+
+func changeBody(cur, next string) string { return `{"current":"` + cur + `","new":"` + next + `"}` }
+
+// Device A changes the password while device B logs in with the old one.
+func TestRaceChangePasswordVsLoginHTTP(t *testing.T) {
+	var changeWins, loginWins int
+	for it := range repeatCount() {
+		srv, _, _ := newRaceServer(t)
+		a := fire(srv, "POST", "/api/auth/signup", raceCreds("ada"), raceBearer(1), "")
+		if a.Status != http.StatusCreated {
+			t.Fatalf("iter %d signup: %d %s", it, a.Status, a.Body)
+		}
+		res := race(2, func(i int) raceResp {
+			if i == 0 {
+				return fire(srv, "PUT", "/api/account/password", changeBody(racePW, racePW2), raceBearer(1), cookiePair(a.SetCookie))
+			}
+			return fire(srv, "POST", "/api/auth/login", raceCreds("ada"), raceBearer(2), "")
+		})
+		ch, lg := res[0], res[1]
+		switch {
+		case ch.Status == 200 && lg.Status == 401: // change won
+			changeWins++
+			if !cookieValid(srv, 1, cookiePair(ch.SetCookie)) || lg.SetCookie != "" {
+				t.Fatalf("iter %d: change won but A's new cookie is dead or B got a cookie", it)
+			}
+			if cookieValid(srv, 1, cookiePair(a.SetCookie)) {
+				t.Fatalf("iter %d: A's old cookie still valid", it)
+			}
+			if loginStatus(srv, 2, racePW) != 401 || loginStatus(srv, 2, racePW2) != 200 {
+				t.Fatalf("iter %d: new password not stored", it)
+			}
+		case ch.Status == 401 && lg.Status == 200: // login won
+			loginWins++
+			if !cookieValid(srv, 2, cookiePair(lg.SetCookie)) || ch.SetCookie != "" || cookieValid(srv, 1, cookiePair(a.SetCookie)) {
+				t.Fatalf("iter %d: login won but sessions are wrong", it)
+			}
+			if loginStatus(srv, 2, racePW2) != 401 || loginStatus(srv, 2, racePW) != 200 {
+				t.Fatalf("iter %d: old password not kept", it)
+			}
+		default:
+			t.Fatalf("iter %d: change %d %s / login %d %s", it, ch.Status, ch.Body, lg.Status, lg.Body)
+		}
+	}
+	t.Logf("change won %d, login won %d", changeWins, loginWins)
+}
+
+// The change is parked after its re-check, holding the store lock. B's login
+// cannot even snapshot until it finishes, then sees the new hash and fails.
+func TestChangePasswordWinsOverLaterLogin(t *testing.T) {
+	srv, ps, _ := newRaceServer(t)
+	a := fire(srv, "POST", "/api/auth/signup", raceCreds("ada"), raceBearer(1), "")
+	parked, release := parkFirst(ps, "change-password")
+	ch := make(chan raceResp, 1)
+	go func() {
+		ch <- fire(srv, "PUT", "/api/account/password", changeBody(racePW, racePW2), raceBearer(1), cookiePair(a.SetCookie))
+	}()
+	<-parked
+	lg := make(chan raceResp, 1)
+	go func() { lg <- fire(srv, "POST", "/api/auth/login", raceCreds("ada"), raceBearer(2), "") }()
+	if !stillBlocked(lg) {
+		t.Fatal("login returned while the change was parked")
+	}
+	release()
+	c, l := <-ch, <-lg
+	if c.Status != 200 || l.Status != 401 || l.Body != `{"error":"Wrong username or password."}`+"\n" {
+		t.Fatalf("change %d %s / login %d %s", c.Status, c.Body, l.Status, l.Body)
+	}
+	if !cookieValid(srv, 1, cookiePair(c.SetCookie)) || cookieValid(srv, 1, cookiePair(a.SetCookie)) {
+		t.Fatal("A's rotated cookie should be the only valid one")
+	}
+	if loginStatus(srv, 2, racePW) != 401 || loginStatus(srv, 2, racePW2) != 200 {
+		t.Fatal("new password not stored")
+	}
+}
+
+// B's login is parked after its re-check. A's change waits for the lock, then
+// finds A's session replaced. The hook cannot park A between its snapshot and
+// its re-check (it fires only under the lock, after the re-check), so the
+// store-level CAS failure of A is not forced here; the handler's own session
+// lookup fails first.
+func TestLoginWinsOverLaterChangePassword(t *testing.T) {
+	srv, ps, _ := newRaceServer(t)
+	a := fire(srv, "POST", "/api/auth/signup", raceCreds("ada"), raceBearer(1), "")
+	parked, release := parkFirst(ps, "login")
+	lg := make(chan raceResp, 1)
+	go func() { lg <- fire(srv, "POST", "/api/auth/login", raceCreds("ada"), raceBearer(2), "") }()
+	<-parked
+	ch := make(chan raceResp, 1)
+	go func() {
+		ch <- fire(srv, "PUT", "/api/account/password", changeBody(racePW, racePW2), raceBearer(1), cookiePair(a.SetCookie))
+	}()
+	if !stillBlocked(ch) {
+		t.Fatal("change returned while the login was parked")
+	}
+	release()
+	l, c := <-lg, <-ch
+	if l.Status != 200 || c.Status != 401 || c.Body != `{"error":"Not signed in."}`+"\n" || c.SetCookie != "" {
+		t.Fatalf("login %d %s / change %d %s", l.Status, l.Body, c.Status, c.Body)
+	}
+	if !cookieValid(srv, 2, cookiePair(l.SetCookie)) || cookieValid(srv, 1, cookiePair(a.SetCookie)) {
+		t.Fatal("B's cookie should be the only valid one")
+	}
+	if loginStatus(srv, 2, racePW2) != 401 || loginStatus(srv, 2, racePW) != 200 {
+		t.Fatal("old password not kept")
 	}
 }

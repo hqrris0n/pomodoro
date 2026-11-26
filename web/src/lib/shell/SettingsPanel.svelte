@@ -36,6 +36,10 @@
   let confirmingDelete = $state(false);
   let deleteError = $state<string | null>(null);
   let deletePassword = $state('');
+  let currentPassword = $state('');
+  let newPassword = $state('');
+  let passwordError = $state<string | null>(null);
+  let passwordChanged = $state(false);
   let previous: HTMLElement | null = null;
   let wasOpen = false;
 
@@ -49,6 +53,10 @@
       confirmingDelete = false;
       deleteError = null;
       deletePassword = '';
+      currentPassword = '';
+      newPassword = '';
+      passwordError = null;
+      passwordChanged = false;
       void tick().then(() => closeButton?.focus());
     } else {
       previous?.focus();
@@ -82,6 +90,17 @@
     confirmingDelete = false;
     deleteError = null;
     deletePassword = '';
+  }
+
+  async function changePassword(e: SubmitEvent) {
+    e.preventDefault();
+    passwordChanged = false;
+    passwordError = await profiles.changePassword(currentPassword, newPassword);
+    if (!passwordError && profiles.current) {
+      currentPassword = '';
+      newPassword = '';
+      passwordChanged = true;
+    }
   }
 
   async function deleteAccount() {
@@ -199,7 +218,29 @@
         {:else if profiles.status === 'offline'}
           <p class="sub">Saved on this device. The café gets your changes when it's back.</p>
         {/if}
-        <!-- Change password form goes here. -->
+        <form class="password-form" onsubmit={changePassword}>
+          <div class="password">
+            <input
+              id="current-password"
+              bind:value={currentPassword}
+              type="password"
+              autocomplete="current-password"
+            />
+            <label for="current-password" class="sub small">Current password</label>
+          </div>
+          <div class="password">
+            <input
+              id="new-password"
+              bind:value={newPassword}
+              type="password"
+              autocomplete="new-password"
+            />
+            <label for="new-password" class="sub small">New password</label>
+          </div>
+          {#if passwordError}<p class="error" role="alert">{passwordError}</p>{/if}
+          {#if passwordChanged}<p class="sub" role="status">Password changed.</p>{/if}
+          <button type="submit" class="btn" disabled={profiles.busy}>Save</button>
+        </form>
         <button
           type="button"
           class="btn"
@@ -265,7 +306,7 @@
               aria-invalid={deleteError !== null}
               aria-describedby={deleteError ? 'delete-error' : undefined}
             />
-            <label for="delete-password" class="sub">Password</label>
+            <label for="delete-password" class="sub small">Password</label>
           </div>
           {#if deleteError}<p id="delete-error" class="error" role="alert">{deleteError}</p>{/if}
           <div class="confirm">
@@ -387,6 +428,20 @@
     display: flex;
     flex-direction: column;
     gap: var(--s1);
+  }
+
+  .small {
+    font-size: var(--t1);
+  }
+
+  .password-form {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s2);
+  }
+
+  .password-form p {
+    margin: 0;
   }
 
   select,
