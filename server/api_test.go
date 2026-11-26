@@ -44,7 +44,7 @@ func newEnv(t *testing.T) *testEnv {
 		}
 	}
 	h, clk := newTestHub()
-	ps := openProfiles(filepath.Join(root, "data"), clk.Now, t.Logf)
+	ps := openProfilesIter(filepath.Join(root, "data"), clk.Now, t.Logf, testPBKDF2Iter)
 	srv := httptest.NewServer(newHandler(h, ps, dir))
 	t.Cleanup(srv.Close)
 	t.Cleanup(h.CloseStreams)

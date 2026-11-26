@@ -91,7 +91,7 @@ func TestProfileDuplicateIgnoresCase(t *testing.T) {
 	e := newEnv(t)
 	e.do(t, "POST", "/api/profiles", ptok, pbody("Ada", map[string]any{}))
 	code, body := e.do(t, "POST", "/api/profiles", ptok, pbody("aDA", map[string]any{}))
-	if code != 409 || !strings.Contains(body, "that username is taken") {
+	if code != 409 || !strings.Contains(body, "That username is taken.") {
 		t.Fatalf("dup: %d %s", code, body)
 	}
 }
@@ -105,7 +105,7 @@ func TestProfileLimit(t *testing.T) {
 		}
 	}
 	code, body := e.do(t, "POST", "/api/profiles", ptok, pbody("extra", map[string]any{}))
-	if code != 429 || !strings.Contains(body, "too many profiles") {
+	if code != 429 || !strings.Contains(body, "Too many accounts") {
 		t.Fatalf("limit: %d %s", code, body)
 	}
 }
@@ -175,26 +175,26 @@ func TestProfileMissing(t *testing.T) {
 func TestProfilePersistence(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "nested", "data")
 	clk := &fakeClock{t: testHubNow()}
-	s := openProfiles(dir, clk.Now, t.Logf)
+	s := openProfilesIter(dir, clk.Now, t.Logf, testPBKDF2Iter)
 	if !s.Enabled() {
 		t.Fatal("store should be enabled")
 	}
-	if _, err := s.Create("Ada", "Ada", json.RawMessage(`{"a":1}`)); err != nil {
+	if _, err := s.SignUp("Ada", "Ada", json.RawMessage(`{"a":1}`), "password1"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Create("Bob", "Bob", json.RawMessage(`{}`)); err != nil {
+	if _, err := s.SignUp("Bob", "Bob", json.RawMessage(`{}`), "password1"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Put("ada", "Ada L", json.RawMessage(`{"a":2}`)); err != nil {
+	if _, err := s.putByName("ada", "Ada L", json.RawMessage(`{"a":2}`)); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Delete("bob"); err != nil {
+	if err := s.deleteByName("bob"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Create("Cy", "Cy", json.RawMessage(`{"c":[1]}`)); err != nil {
+	if _, err := s.SignUp("Cy", "Cy", json.RawMessage(`{"c":[1]}`), "password1"); err != nil {
 		t.Fatal(err)
 	}
-	s2 := openProfiles(dir, clk.Now, t.Logf)
+	s2 := openProfilesIter(dir, clk.Now, t.Logf, testPBKDF2Iter)
 	if !s2.Enabled() || !reflect.DeepEqual(s.m, s2.m) || len(s2.m) != 2 {
 		t.Fatalf("round trip mismatch:\n%+v\n%+v", s.m, s2.m)
 	}
@@ -209,18 +209,18 @@ func TestProfilePersistence(t *testing.T) {
 
 func TestProfileSaveFailureRollsBack(t *testing.T) {
 	dir := t.TempDir()
-	s := openProfiles(dir, testHubNow, t.Logf)
-	if _, err := s.Create("Ada", "Ada", json.RawMessage(`{}`)); err != nil {
+	s := openProfilesIter(dir, testHubNow, t.Logf, testPBKDF2Iter)
+	if _, err := s.SignUp("Ada", "Ada", json.RawMessage(`{}`), "password1"); err != nil {
 		t.Fatal(err)
 	}
 	s.dir = filepath.Join(dir, "gone") // temp file creation now fails
-	if _, err := s.Create("Bob", "Bob", json.RawMessage(`{}`)); err != errProfilesSave {
+	if _, err := s.SignUp("Bob", "Bob", json.RawMessage(`{}`), "password1"); err != errProfilesSave {
 		t.Fatalf("create: %v", err)
 	}
-	if _, err := s.Put("Ada", "X", json.RawMessage(`{"x":1}`)); err != errProfilesSave {
+	if _, err := s.putByName("Ada", "X", json.RawMessage(`{"x":1}`)); err != errProfilesSave {
 		t.Fatalf("put: %v", err)
 	}
-	if err := s.Delete("Ada"); err != errProfilesSave {
+	if err := s.deleteByName("Ada"); err != errProfilesSave {
 		t.Fatalf("delete: %v", err)
 	}
 	if len(s.m) != 1 || s.m["ada"].DisplayName != "Ada" {
@@ -232,11 +232,12 @@ func TestProfileCorruptFileDisables(t *testing.T) {
 	cases := map[string]string{
 		"invalid json":   `{not json`,
 		"wrong shape":    `[1,2]`,
-		"wrong version":  `{"version":2,"profiles":[]}`,
+		"wrong version":  `{"version":3,"profiles":[]}`,
 		"no profiles":    `{"version":1}`,
 		"settings array": `{"version":1,"profiles":[{"username":"a","displayName":"a","settings":[],"updatedAt":1}]}`,
 		"duplicate":      `{"version":1,"profiles":[{"username":"a","displayName":"a","settings":{},"updatedAt":1},{"username":"A","displayName":"a","settings":{},"updatedAt":1}]}`,
 		"trailing":       `{"version":1,"profiles":[]} x`,
+		"v2 bad hash":    `{"version":2,"profiles":[{"username":"a","displayName":"a","settings":{},"updatedAt":1,"passwordHash":"x","sessionHash":"","sessionExpires":0,"sessionGen":0}]}`,
 	}
 	for name, content := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -245,7 +246,7 @@ func TestProfileCorruptFileDisables(t *testing.T) {
 			if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			e.p = openProfiles(filepath.Dir(path), e.clk.Now, t.Logf)
+			e.p = openProfilesIter(filepath.Dir(path), e.clk.Now, t.Logf, testPBKDF2Iter)
 			e.srv.Config.Handler = newHandler(e.h, e.p, e.dir)
 			if e.p.Enabled() {
 				t.Fatal("store should be disabled")
@@ -278,7 +279,7 @@ func TestProfilesUnusableDirDisables(t *testing.T) {
 	if err := os.WriteFile(blocker, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if openProfiles(filepath.Join(blocker, "sub"), testHubNow, t.Logf).Enabled() {
+	if openProfilesIter(filepath.Join(blocker, "sub"), testHubNow, t.Logf, testPBKDF2Iter).Enabled() {
 		t.Fatal("expected disabled store")
 	}
 }
@@ -313,8 +314,183 @@ func TestProfilesConcurrentPut(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	s2 := openProfiles(filepath.Join(filepath.Dir(e.dir), "data"), e.clk.Now, t.Logf)
+	s2 := openProfilesIter(filepath.Join(filepath.Dir(e.dir), "data"), e.clk.Now, t.Logf, testPBKDF2Iter)
 	if !reflect.DeepEqual(e.p.m, s2.m) {
 		t.Fatalf("disk differs from memory:\n%+v\n%+v", e.p.m, s2.m)
 	}
+}
+
+// testPBKDF2Iter keeps hashing fast in tests.
+const testPBKDF2Iter = 1000
+
+func wantAPIErr(t *testing.T, err error, status int, msg string) {
+	t.Helper()
+	ae, ok := err.(*apiError)
+	if !ok || ae.status != status || ae.msg != msg {
+		t.Fatalf("got error %v, want %d %q", err, status, msg)
+	}
+}
+
+func TestAccountsMigrateVersion1(t *testing.T) {
+	dir := t.TempDir()
+	v1 := `{"version":1,"profiles":[` +
+		`{"username":"Ada","displayName":"Ada L","settings":{"a":1},"updatedAt":5},` +
+		`{"username":"bob","displayName":"Bobby","settings":{},"updatedAt":7}]}`
+	if err := os.WriteFile(filepath.Join(dir, profilesFile), []byte(v1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	clk := &fakeClock{t: testHubNow()}
+	s := openProfilesIter(dir, clk.Now, t.Logf, testPBKDF2Iter)
+	if !s.Enabled() {
+		t.Fatal("store should be enabled")
+	}
+	want := map[string]Profile{
+		"ada": {Username: "Ada", DisplayName: "Ada L", Settings: json.RawMessage(`{"a":1}`), UpdatedAt: 5},
+		"bob": {Username: "bob", DisplayName: "Bobby", Settings: json.RawMessage(`{}`), UpdatedAt: 7},
+	}
+	for name, p := range want {
+		g, err := s.Login(strings.ToUpper(name), migratedPassword)
+		if err != nil {
+			t.Fatalf("login %s: %v", name, err)
+		}
+		if !reflect.DeepEqual(g.Profile, p) || g.Token == "" || g.Gen != 1 {
+			t.Fatalf("login %s: %+v", name, g)
+		}
+	}
+	raw, _ := os.ReadFile(filepath.Join(dir, profilesFile))
+	var head struct{ Version int }
+	if err := json.Unmarshal(raw, &head); err != nil || head.Version != 2 {
+		t.Fatalf("written file: %v %s", err, raw)
+	}
+	s2 := openProfilesIter(dir, clk.Now, t.Logf, testPBKDF2Iter)
+	if _, err := s2.Login("bob", migratedPassword); err != nil {
+		t.Fatalf("login after rewrite: %v", err)
+	}
+	if _, err := s2.Login("bob", "wrongpass"); err == nil {
+		t.Fatal("wrong password accepted")
+	}
+}
+
+func TestSignUpTakenIgnoresCaseAndKeepsFile(t *testing.T) {
+	dir := t.TempDir()
+	s := openProfilesIter(dir, testHubNow, t.Logf, testPBKDF2Iter)
+	if _, err := s.SignUp("ada", "ada", json.RawMessage(`{}`), "password1"); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(filepath.Join(dir, profilesFile))
+	_, err := s.SignUp("ADA", "ADA", json.RawMessage(`{}`), "password2")
+	wantAPIErr(t, err, 409, "That username is taken.")
+	after, _ := os.ReadFile(filepath.Join(dir, profilesFile))
+	if string(before) != string(after) {
+		t.Fatal("file changed")
+	}
+}
+
+func TestAccountCap(t *testing.T) {
+	s := openProfilesIter(t.TempDir(), testHubNow, t.Logf, testPBKDF2Iter)
+	for i := 0; i < 50; i++ {
+		if _, err := s.SignUp(fmt.Sprintf("u%d", i), "u", json.RawMessage(`{}`), "password1"); err != nil {
+			t.Fatalf("sign-up %d: %v", i, err)
+		}
+	}
+	_, err := s.SignUp("extra", "extra", json.RawMessage(`{}`), "password1")
+	wantAPIErr(t, err, 429, "Too many accounts")
+}
+
+func TestLoginFailuresShareMessage(t *testing.T) {
+	s := openProfilesIter(t.TempDir(), testHubNow, t.Logf, testPBKDF2Iter)
+	if _, err := s.SignUp("ada", "ada", json.RawMessage(`{}`), "password1"); err != nil {
+		t.Fatal(err)
+	}
+	_, err := s.Login("ada", "password2")
+	wantAPIErr(t, err, 401, "Wrong username or password.")
+	_, err = s.Login("nobody", "password1")
+	wantAPIErr(t, err, 401, "Wrong username or password.")
+}
+
+func TestLoginReplacesSession(t *testing.T) {
+	s := openProfilesIter(t.TempDir(), testHubNow, t.Logf, testPBKDF2Iter)
+	up, err := s.SignUp("Ada", "Ada", json.RawMessage(`{}`), "password1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := s.Login("ada", "password1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := s.Login("ADA", "password1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.Profile.Username != "Ada" || !(up.Gen < a.Gen && a.Gen < b.Gen) {
+		t.Fatalf("grants: %+v %+v %+v", up, a, b)
+	}
+	for _, old := range []string{up.Token, a.Token} {
+		_, _, err := s.Lookup(old)
+		wantAPIErr(t, err, 401, errNoSession.msg)
+	}
+	p, gen, err := s.Lookup(b.Token)
+	if err != nil || p.Username != "Ada" || gen != b.Gen {
+		t.Fatalf("lookup B: %+v %d %v", p, gen, err)
+	}
+}
+
+func TestSessionSurvivesRestart(t *testing.T) {
+	dir := t.TempDir()
+	clk := &fakeClock{t: testHubNow()}
+	s := openProfilesIter(dir, clk.Now, t.Logf, testPBKDF2Iter)
+	g, err := s.SignUp("ada", "ada", json.RawMessage(`{}`), "password1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s2 := openProfilesIter(dir, clk.Now, t.Logf, testPBKDF2Iter)
+	if p, gen, err := s2.Lookup(g.Token); err != nil || p.Username != "ada" || gen != g.Gen {
+		t.Fatalf("after restart: %+v %d %v", p, gen, err)
+	}
+}
+
+func TestPasswordHashFormat(t *testing.T) {
+	s := openProfilesIter(t.TempDir(), testHubNow, t.Logf, testPBKDF2Iter)
+	h, err := s.hashPassword("password1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts := strings.Split(h, "$")
+	if len(parts) != 4 || parts[0] != "pbkdf2-sha256" || parts[1] != "1000" {
+		t.Fatalf("format: %q", h)
+	}
+	iter, salt, key, err := parsePasswordHash(h)
+	if err != nil || iter != 1000 || len(salt) != 16 || len(key) != 32 {
+		t.Fatalf("parse: %d %d %d %v", iter, len(salt), len(key), err)
+	}
+	if formatPasswordHash(iter, salt, key) != h {
+		t.Fatal("format does not round-trip")
+	}
+	// A store hashing with a different count still checks old hashes.
+	s2 := openProfilesIter(t.TempDir(), testHubNow, t.Logf, 2000)
+	if !s2.verifyPassword(h, "password1") || s2.verifyPassword(h, "password2") {
+		t.Fatal("verify uses the stored iteration count")
+	}
+}
+
+func TestPasswordLength(t *testing.T) {
+	s := openProfilesIter(t.TempDir(), testHubNow, t.Logf, testPBKDF2Iter)
+	cases := []struct {
+		pw  string
+		err error
+	}{
+		{strings.Repeat("a", 7), errPasswordShort},
+		{strings.Repeat("é", 7), errPasswordShort}, // 14 bytes, 7 code points
+		{strings.Repeat("a", 8), nil},
+		{strings.Repeat("é", 72), nil},
+		{strings.Repeat("a", 73), errPasswordLong},
+	}
+	for i, c := range cases {
+		_, err := s.SignUp(fmt.Sprintf("u%d", i), "u", json.RawMessage(`{}`), c.pw)
+		if err != c.err {
+			t.Errorf("%d code points: got %v, want %v", len([]rune(c.pw)), err, c.err)
+		}
+	}
+	wantAPIErr(t, errPasswordShort, 400, "Password must be at least 8 characters.")
+	wantAPIErr(t, errPasswordLong, 400, "Password must be at most 72 characters.")
 }

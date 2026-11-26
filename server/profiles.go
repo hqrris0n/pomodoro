@@ -17,23 +17,27 @@ import (
 )
 
 const (
-	maxProfiles      = 20
+	maxProfiles      = 50
 	maxSettingsBytes = 256 << 10
 	// profileBodyBytes leaves room for the envelope around maximal settings.
 	profileBodyBytes = maxSettingsBytes + 4<<10
 	profilesFile     = "profiles.json"
+	// profilesVersion is the file version written. Version 1 (profiles
+	// without passwords) is migrated on load.
+	profilesVersion = 2
 )
 
 var (
 	errNoProfile      = &apiError{404, "no such profile"}
-	errProfileTaken   = &apiError{409, "that username is taken"}
-	errProfilesFull   = &apiError{429, "too many profiles"}
+	errProfileTaken   = &apiError{409, "That username is taken."}
+	errProfilesFull   = &apiError{429, "Too many accounts"}
 	errProfilesOff    = &apiError{503, "profiles are unavailable"}
 	errProfilesSave   = &apiError{500, "could not save profiles"}
 	errSettingsObject = badRequest("settings must be a JSON object")
 )
 
-// Profile is the stored and wire form of one user's saved settings.
+// Profile is the public part of one account: the wire form of its saved
+// settings.
 type Profile struct {
 	Username    string          `json:"username"`
 	DisplayName string          `json:"displayName"`
@@ -48,19 +52,27 @@ type profileSummary struct {
 
 type profilesDisk struct {
 	Version  int       `json:"version"`
-	Profiles []Profile `json:"profiles"`
+	Profiles []account `json:"profiles"`
 }
 
-// profileStore keeps all profiles in memory and in <dir>/profiles.json. If the
+// profileStore keeps all accounts in memory and in <dir>/profiles.json. If the
 // file cannot be read or is corrupt the store is disabled and never writes, so
 // the file stays exactly as found.
 type profileStore struct {
-	mu       sync.Mutex
-	path     string
-	dir      string
-	now      func() time.Time
-	disabled bool
-	m        map[string]Profile // keyed by lowercased username
+	mu        sync.Mutex
+	path      string
+	dir       string
+	now       func() time.Time
+	disabled  bool
+	m         map[string]account // keyed by lowercased username
+	bySession map[string]string  // session hash -> key in m
+
+	iter      int           // PBKDF2 iterations for new hashes
+	sem       chan struct{} // bounds concurrent PBKDF2 runs
+	dummyHash string        // checked for unknown usernames
+	// testHook, if set, is called with s.mu held between a check and the
+	// change it guards (see hook). Always nil in production.
+	testHook func(op string)
 }
 
 func profileKey(username string) string { return strings.ToLower(strings.TrimSpace(username)) }
@@ -102,70 +114,135 @@ func validateProfileSettings(raw json.RawMessage) (json.RawMessage, error) {
 // openProfiles loads the store from dir. Problems disable the store rather
 // than fail, so the rest of the server keeps working.
 func openProfiles(dir string, now func() time.Time, logf func(format string, args ...any)) *profileStore {
-	s := &profileStore{dir: dir, path: filepath.Join(dir, profilesFile), now: now, m: map[string]Profile{}}
+	return openProfilesIter(dir, now, logf, defaultPBKDF2Iter)
+}
+
+// openProfilesIter is openProfiles with a PBKDF2 iteration count for new
+// hashes (tests use a low one).
+func openProfilesIter(dir string, now func() time.Time, logf func(format string, args ...any), iter int) *profileStore {
+	s := &profileStore{
+		dir: dir, path: filepath.Join(dir, profilesFile), now: now,
+		m: map[string]account{}, bySession: map[string]string{},
+		iter: iter, sem: make(chan struct{}, maxConcurrentHashes),
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		logf("profiles disabled: %v", err)
 		s.disabled = true
 		return s
 	}
 	raw, err := os.ReadFile(s.path)
-	if errors.Is(err, os.ErrNotExist) {
-		return s
-	}
 	if err == nil {
 		err = s.parse(raw)
+	} else if errors.Is(err, os.ErrNotExist) {
+		err = nil
+	}
+	if err == nil {
+		// Hashed with a random password nobody knows.
+		if s.dummyHash, err = s.hashPassword(sessionHashOf(s.path + s.now().String())); err != nil {
+			err = errors.New("cannot hash: " + err.Error())
+		}
 	}
 	if err != nil {
 		logf("profiles disabled: %s: %v", s.path, err)
 		s.disabled = true
-		s.m = map[string]Profile{}
+		s.m, s.bySession = map[string]account{}, map[string]string{}
 	}
 	return s
 }
 
-func (s *profileStore) parse(raw []byte) error {
-	var d profilesDisk
+func strictDecode(raw []byte, v any) error {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
-	if err := dec.Decode(&d); err != nil {
+	if err := dec.Decode(v); err != nil {
 		return err
 	}
 	if _, err := dec.Token(); err != io.EOF {
 		return errors.New("unexpected data after JSON")
 	}
-	if d.Version != 1 || d.Profiles == nil {
-		return errors.New("unsupported or missing version/profiles")
+	return nil
+}
+
+// parse loads a version 1 or 2 file. Version 1 records get the password
+// migratedPassword and no session; the file itself is not rewritten here but
+// on the next change, which always writes version 2. It runs before the store
+// is shared, so the hashing here is not under s.mu.
+func (s *profileStore) parse(raw []byte) error {
+	var head struct {
+		Version  int             `json:"version"`
+		Profiles json.RawMessage `json:"profiles"`
 	}
-	for _, p := range d.Profiles {
-		u, err := validateUsername(p.Username)
-		if err != nil || u != p.Username {
-			return errors.New("invalid username " + p.Username)
+	if err := strictDecode(raw, &head); err != nil {
+		return err
+	}
+	if t := bytes.TrimSpace(head.Profiles); len(t) == 0 || string(t) == "null" {
+		return errors.New("missing profiles")
+	}
+	var all []account
+	switch head.Version {
+	case 1:
+		var ps []Profile
+		if err := strictDecode(head.Profiles, &ps); err != nil {
+			return err
 		}
-		if _, err := validateName(p.DisplayName); err != nil {
-			return errors.New("invalid displayName for " + p.Username)
+		for _, p := range ps {
+			all = append(all, account{Profile: p})
 		}
-		if _, err := validateProfileSettings(p.Settings); err != nil {
-			return errors.New("invalid settings for " + p.Username)
+	case profilesVersion:
+		if err := strictDecode(head.Profiles, &all); err != nil {
+			return err
 		}
-		k := profileKey(p.Username)
+	default:
+		return errors.New("unsupported or missing version")
+	}
+	for _, a := range all {
+		u, err := validateUsername(a.Username)
+		if err != nil || u != a.Username {
+			return errors.New("invalid username " + a.Username)
+		}
+		if _, err := validateName(a.DisplayName); err != nil {
+			return errors.New("invalid displayName for " + a.Username)
+		}
+		if _, err := validateProfileSettings(a.Settings); err != nil {
+			return errors.New("invalid settings for " + a.Username)
+		}
+		k := profileKey(a.Username)
 		if _, dup := s.m[k]; dup {
-			return errors.New("duplicate username " + p.Username)
+			return errors.New("duplicate username " + a.Username)
 		}
-		s.m[k] = p
+		if head.Version == 1 {
+			if a.PasswordHash, err = s.hashPassword(migratedPassword); err != nil {
+				return errors.New("cannot hash: " + err.Error())
+			}
+		} else {
+			if _, _, _, err := parsePasswordHash(a.PasswordHash); err != nil {
+				return errors.New("invalid passwordHash for " + a.Username)
+			}
+			if a.SessionHash != "" {
+				if !validSessionHash(a.SessionHash) || a.SessionExpires <= 0 {
+					return errors.New("invalid session for " + a.Username)
+				}
+				if _, dup := s.bySession[a.SessionHash]; dup {
+					return errors.New("duplicate session for " + a.Username)
+				}
+			} else if a.SessionExpires != 0 {
+				return errors.New("invalid session for " + a.Username)
+			}
+		}
+		s.setLocked(k, a)
 	}
 	return nil
 }
 
 func (s *profileStore) Enabled() bool { return !s.disabled }
 
-// save writes all profiles atomically. Callers hold s.mu.
+// save writes all accounts atomically. Callers hold s.mu.
 func (s *profileStore) save() error {
-	all := make([]Profile, 0, len(s.m))
-	for _, p := range s.m {
-		all = append(all, p)
+	all := make([]account, 0, len(s.m))
+	for _, a := range s.m {
+		all = append(all, a)
 	}
 	sort.Slice(all, func(i, j int) bool { return profileKey(all[i].Username) < profileKey(all[j].Username) })
-	b, err := json.Marshal(profilesDisk{Version: 1, Profiles: all})
+	b, err := json.Marshal(profilesDisk{Version: profilesVersion, Profiles: all})
 	if err != nil {
 		return err
 	}
@@ -194,8 +271,8 @@ func (s *profileStore) List() []profileSummary {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make([]profileSummary, 0, len(s.m))
-	for _, p := range s.m {
-		out = append(out, profileSummary{p.Username, p.DisplayName})
+	for _, a := range s.m {
+		out = append(out, profileSummary{a.Username, a.DisplayName})
 	}
 	sort.Slice(out, func(i, j int) bool { return profileKey(out[i].Username) < profileKey(out[j].Username) })
 	return out
@@ -204,36 +281,16 @@ func (s *profileStore) List() []profileSummary {
 func (s *profileStore) Get(username string) (Profile, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	p, ok := s.m[profileKey(username)]
+	a, ok := s.m[profileKey(username)]
 	if !ok {
 		return Profile{}, errNoProfile
 	}
-	return p, nil
+	return a.Profile, nil
 }
 
-// Create adds a profile. username, displayName and settings are already validated.
-func (s *profileStore) Create(username, displayName string, settings json.RawMessage) (Profile, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	k := profileKey(username)
-	if _, ok := s.m[k]; ok {
-		return Profile{}, errProfileTaken
-	}
-	if len(s.m) >= maxProfiles {
-		return Profile{}, errProfilesFull
-	}
-	p := Profile{Username: username, DisplayName: displayName, Settings: settings, UpdatedAt: s.now().UnixMilli()}
-	s.m[k] = p
-	if err := s.save(); err != nil {
-		delete(s.m, k)
-		return Profile{}, errProfilesSave
-	}
-	return p, nil
-}
-
-// Put replaces displayName and settings and returns the new updatedAt, which
-// is strictly greater than the previous one.
-func (s *profileStore) Put(username, displayName string, settings json.RawMessage) (int64, error) {
+// putByName and deleteByName serve only the pre-account HTTP handlers below,
+// which have no sessions; they go away when those handlers are replaced.
+func (s *profileStore) putByName(username, displayName string, settings json.RawMessage) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	k := profileKey(username)
@@ -241,19 +298,16 @@ func (s *profileStore) Put(username, displayName string, settings json.RawMessag
 	if !ok {
 		return 0, errNoProfile
 	}
-	at := s.now().UnixMilli()
-	if at <= old.UpdatedAt {
-		at = old.UpdatedAt + 1
-	}
-	s.m[k] = Profile{Username: old.Username, DisplayName: displayName, Settings: settings, UpdatedAt: at}
+	a := updatedLocked(old, displayName, settings, s.now())
+	s.setLocked(k, a)
 	if err := s.save(); err != nil {
-		s.m[k] = old
+		s.setLocked(k, old)
 		return 0, errProfilesSave
 	}
-	return at, nil
+	return a.UpdatedAt, nil
 }
 
-func (s *profileStore) Delete(username string) error {
+func (s *profileStore) deleteByName(username string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	k := profileKey(username)
@@ -261,9 +315,9 @@ func (s *profileStore) Delete(username string) error {
 	if !ok {
 		return errNoProfile
 	}
-	delete(s.m, k)
+	s.deleteLocked(k)
 	if err := s.save(); err != nil {
-		s.m[k] = old
+		s.setLocked(k, old)
 		return errProfilesSave
 	}
 	return nil
@@ -325,11 +379,13 @@ func (a *api) createProfile(w http.ResponseWriter, r *http.Request, _ string) er
 	if err != nil {
 		return err
 	}
-	p, err := a.p.Create(username, display, settings)
+	// This pre-account endpoint takes no password, so it uses the migration
+	// default until the handler is replaced.
+	g, err := a.p.SignUp(username, display, settings, migratedPassword)
 	if err != nil {
 		return err
 	}
-	writeJSON(w, 201, p)
+	writeJSON(w, 201, g.Profile)
 	return nil
 }
 
@@ -355,7 +411,7 @@ func (a *api) putProfile(w http.ResponseWriter, r *http.Request, _ string) error
 	if err != nil {
 		return err
 	}
-	at, err := a.p.Put(r.PathValue("username"), display, settings)
+	at, err := a.p.putByName(r.PathValue("username"), display, settings)
 	if err != nil {
 		return err
 	}
@@ -367,7 +423,7 @@ func (a *api) deleteProfile(w http.ResponseWriter, r *http.Request, _ string) er
 	if err := a.profilesOn(); err != nil {
 		return err
 	}
-	if err := a.p.Delete(r.PathValue("username")); err != nil {
+	if err := a.p.deleteByName(r.PathValue("username")); err != nil {
 		return err
 	}
 	writeJSON(w, 200, struct{}{})
