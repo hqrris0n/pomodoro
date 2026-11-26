@@ -1,43 +1,41 @@
 <script lang="ts">
-  import { identity } from '../shell/identity.svelte';
+  import { identity, randomName } from '../shell/identity.svelte';
+  import IconDice from '../shell/icons/IconDice.svelte';
   import { profiles } from './profiles.svelte';
 
-  let userInput: HTMLInputElement | undefined = $state();
   let nameInput: HTMLInputElement | undefined = $state();
-  let userDraft = $state(profiles.current ?? '');
+  let userDraft = $state('');
   let passwordDraft = $state('');
   let nameDraft = $state(identity.name);
-  let userError = $state<string | null>(null);
+  let authError = $state<string | null>(null);
   let nameError = $state(false);
 
-  // Follow sign-ins and name changes made elsewhere (Settings), unless being edited.
-  $effect(() => {
-    const current = profiles.current ?? '';
-    if (document.activeElement !== userInput) userDraft = current;
-  });
+  // Follow name changes made elsewhere (Settings), unless being edited.
   $effect(() => {
     const name = identity.name;
     if (document.activeElement !== nameInput) nameDraft = name;
   });
 
-  async function logIn() {
-    if (profiles.busy || profiles.current) return;
-    const value = userDraft.trim();
-    if (!value || !passwordDraft) return;
-    userError = await profiles.logIn(value, passwordDraft);
-    if (!userError) passwordDraft = '';
+  async function submit(run: (u: string, p: string) => Promise<string | null>) {
+    if (profiles.busy) return;
+    authError = await run(userDraft.trim(), passwordDraft);
+    if (!authError) passwordDraft = '';
   }
 
-  function loginOnEnter(e: KeyboardEvent) {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      void logIn();
-    }
+  function onSubmit(e: SubmitEvent) {
+    e.preventDefault();
+    void submit((u, p) => profiles.logIn(u, p));
   }
 
   function commitName() {
     nameError = !identity.setName(nameDraft);
     nameDraft = identity.name;
+  }
+
+  function rollName() {
+    identity.setName(randomName());
+    nameDraft = identity.name;
+    nameError = false;
   }
 
   function blurOnEnter(e: KeyboardEvent) {
@@ -63,59 +61,79 @@
     <rect x="2" y="5" width="1" height="9" />
   </svg>
   <div class="card">
-    <label for="order-for-user">Order for:</label>
-    <input
-      bind:this={userInput}
-      bind:value={userDraft}
-      id="order-for-user"
-      type="text"
-      placeholder="username"
-      aria-label="Username"
-      maxlength="24"
-      autocomplete="username"
-      autocapitalize="off"
-      spellcheck="false"
-      disabled={profiles.busy}
-      aria-invalid={userError !== null}
-      aria-describedby={userError ? 'order-for-user-error' : undefined}
-      readonly={profiles.current !== null}
-      onkeydown={loginOnEnter}
-    />
-    {#if !profiles.current}
-      <input
-        bind:value={passwordDraft}
-        type="password"
-        placeholder="password"
-        aria-label="Password"
-        autocomplete="current-password"
-        disabled={profiles.busy}
-        onkeydown={loginOnEnter}
-      />
-    {/if}
-    {#if userError}
-      <p id="order-for-user-error" class="error" role="alert">{userError}</p>
-    {:else if profiles.notice}
-      <p class="error" role="status">{profiles.notice}</p>
-    {/if}
-
-    <input
-      bind:this={nameInput}
-      bind:value={nameDraft}
-      type="text"
-      placeholder="display name"
-      aria-label="Display name"
-      maxlength="24"
-      autocomplete="off"
-      aria-invalid={nameError}
-      aria-describedby={nameError ? 'order-for-name-error' : undefined}
-      onblur={commitName}
-      onkeydown={blurOnEnter}
-    />
-    {#if nameError}
-      <p id="order-for-name-error" class="error" role="alert">Enter a name.</p>
-    {/if}
-    {#if profiles.status === 'waiting'}
-      <p class="note" role="status">Your settings switch over when this timer ends.</p>
+    {#if profiles.current}
+      <h2>Order for {profiles.current}</h2>
+      <div class="field">
+        <div class="row">
+          <input
+            bind:this={nameInput}
+            bind:value={nameDraft}
+            id="order-for-name"
+            type="text"
+            maxlength="24"
+            autocomplete="off"
+            aria-invalid={nameError}
+            aria-describedby={nameError ? 'order-for-name-error' : undefined}
+            onblur={commitName}
+            onkeydown={blurOnEnter}
+          />
+          <button type="button" class="btn icon" aria-label="Random name" onclick={rollName}>
+            <IconDice />
+          </button>
+        </div>
+        <label for="order-for-name">Display name</label>
+      </div>
+      {#if nameError}
+        <p id="order-for-name-error" class="error" role="alert">Enter a name.</p>
+      {/if}
+      {#if profiles.status === 'waiting'}
+        <p class="note" role="status">Your settings switch over when this timer ends.</p>
+      {/if}
+    {:else}
+      <h2>Order for</h2>
+      <form onsubmit={onSubmit}>
+        <div class="field">
+          <input
+            bind:value={userDraft}
+            id="order-for-user"
+            type="text"
+            maxlength="24"
+            autocomplete="username"
+            autocapitalize="off"
+            spellcheck="false"
+            disabled={profiles.busy}
+            aria-describedby={authError ? 'order-for-auth-error' : undefined}
+          />
+          <label for="order-for-user">Username</label>
+        </div>
+        <div class="field">
+          <input
+            bind:value={passwordDraft}
+            id="order-for-password"
+            type="password"
+            autocomplete="current-password"
+            disabled={profiles.busy}
+            aria-describedby={authError ? 'order-for-auth-error' : undefined}
+          />
+          <label for="order-for-password">Password</label>
+        </div>
+        {#if authError}
+          <p id="order-for-auth-error" class="error" role="alert">{authError}</p>
+        {:else if profiles.notice}
+          <p class="note" role="status">{profiles.notice}</p>
+        {/if}
+        <div class="actions">
+          <button type="submit" class="btn primary" disabled={profiles.busy}>Log in</button>
+          <button
+            type="button"
+            class="btn"
+            disabled={profiles.busy}
+            onclick={() => submit((u, p) => profiles.signUp(u, p))}
+          >
+            Sign up
+          </button>
+        </div>
+      </form>
     {/if}
   </div>
   <!-- Outer wire: in front of the card. -->
@@ -180,9 +198,40 @@
     fill: var(--sky);
   }
 
-  label {
+  h2 {
+    margin: 0;
     font-size: var(--t2);
+    font-weight: inherit;
     line-height: 1;
+    overflow-wrap: anywhere;
+  }
+
+  form {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s1);
+  }
+
+  .field {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+  }
+
+  .row {
+    display: flex;
+    gap: var(--s1);
+  }
+
+  .row input {
+    flex: 1;
+    min-width: 0;
+  }
+
+  label {
+    font-size: var(--t1);
+    line-height: 1.2;
+    color: var(--plum);
   }
 
   input {
@@ -192,16 +241,31 @@
     border: var(--border);
     border-radius: 0;
     width: 100%;
-  }
-
-  input::placeholder {
-    color: var(--plum);
+    font-size: var(--t2);
   }
 
   input:disabled {
     background: var(--foam);
     color: var(--plum);
     cursor: progress;
+  }
+
+  .actions {
+    display: flex;
+    gap: var(--s1);
+  }
+
+  .actions .btn {
+    flex: 1;
+  }
+
+  .icon {
+    flex: none;
+    width: 42px;
+    height: 42px;
+    padding: 0;
+    display: grid;
+    place-items: center;
   }
 
   .error,
