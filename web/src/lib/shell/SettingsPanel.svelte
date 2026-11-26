@@ -6,6 +6,7 @@
   import { profiles } from '../profiles/profiles.svelte';
   import { identity, randomName } from './identity.svelte';
   import IconClose from './icons/IconClose.svelte';
+  import IconDice from './icons/IconDice.svelte';
   import Toggle from './Toggle.svelte';
 
   let {
@@ -71,16 +72,21 @@
     nameError = false;
   }
 
-  async function logOut() {
-    await profiles.logOut();
+  function startDelete() {
+    deleteError = null;
+    deletePassword = '';
+    confirmingDelete = true;
   }
 
-  async function deleteUser() {
+  function cancelDelete() {
+    confirmingDelete = false;
+    deleteError = null;
+    deletePassword = '';
+  }
+
+  async function deleteAccount() {
     deleteError = await profiles.deleteAccount(deletePassword);
-    if (!deleteError) {
-      confirmingDelete = false;
-      deletePassword = '';
-    }
+    if (!deleteError) cancelDelete();
   }
 
   function onNameKey(e: KeyboardEvent) {
@@ -187,15 +193,21 @@
     <section aria-labelledby="you-heading">
       <h3 id="you-heading">You</h3>
       {#if profiles.current}
-        <p class="sub">Logged in as {profiles.current}.</p>
-        <button type="button" class="btn" disabled={profiles.busy} onclick={logOut}>Log out</button>
-      {:else}
-        <p class="sub">Settings stay on this device. Log in from the order card to sync them.</p>
-      {/if}
-      {#if profiles.status === 'waiting'}
-        <p class="note">Your settings switch over when this timer ends.</p>
-      {:else if profiles.current && profiles.status === 'offline'}
-        <p class="sub">Saved on this device. The café gets your changes when it's back.</p>
+        <p class="account">Logged in as {profiles.current}</p>
+        {#if profiles.status === 'waiting'}
+          <p class="note">Your settings switch over when this timer ends.</p>
+        {:else if profiles.status === 'offline'}
+          <p class="sub">Saved on this device. The café gets your changes when it's back.</p>
+        {/if}
+        <!-- Change password form goes here. -->
+        <button
+          type="button"
+          class="btn"
+          disabled={profiles.busy}
+          onclick={() => void profiles.logOut()}
+        >
+          Log out
+        </button>
       {/if}
       <label class="field" for="display-name">
         <span>Display name</span>
@@ -215,20 +227,7 @@
           onkeydown={onNameKey}
         />
         <button type="button" class="btn icon" aria-label="Random name" onclick={rollName}>
-          <svg
-            viewBox="0 0 8 8"
-            width="24"
-            height="24"
-            shape-rendering="crispEdges"
-            aria-hidden="true"
-          >
-            <rect x="0" y="0" width="8" height="8" class="die" />
-            <rect x="1" y="1" width="6" height="6" class="face" />
-            <rect x="2" y="2" width="1" height="1" class="die" />
-            <rect x="5" y="2" width="1" height="1" class="die" />
-            <rect x="2" y="5" width="1" height="1" class="die" />
-            <rect x="5" y="5" width="1" height="1" class="die" />
-          </svg>
+          <IconDice />
         </button>
       </div>
       {#if nameError}<p id="name-error" class="error" role="alert">Enter a name.</p>{/if}
@@ -250,41 +249,43 @@
       {#if identity.notifyError}<p class="error" role="alert">{identity.notifyError}</p>{/if}
     </section>
 
-    <section class="danger" aria-label="Delete user">
-      {#if confirmingDelete && profiles.current}
-        <p role="alert">
-          Delete {profiles.current}? Its settings are removed on every device. Enter your password
-          to confirm.
-        </p>
-        <input
-          bind:value={deletePassword}
-          type="password"
-          aria-label="Password"
-          autocomplete="current-password"
-        />
-        <div class="confirm">
-          <button type="button" class="btn" onclick={() => (confirmingDelete = false)}>
-            Cancel
+    {#if profiles.current}
+      <section class="danger" aria-label="Delete account">
+        {#if confirmingDelete}
+          <p>
+            Delete the account {profiles.current}? Its saved settings are removed from the server;
+            this device keeps its own.
+          </p>
+          <div class="password">
+            <input
+              id="delete-password"
+              bind:value={deletePassword}
+              type="password"
+              autocomplete="current-password"
+              aria-invalid={deleteError !== null}
+              aria-describedby={deleteError ? 'delete-error' : undefined}
+            />
+            <label for="delete-password" class="sub">Password</label>
+          </div>
+          {#if deleteError}<p id="delete-error" class="error" role="alert">{deleteError}</p>{/if}
+          <div class="confirm">
+            <button type="button" class="btn" onclick={cancelDelete}>Cancel</button>
+            <button
+              type="button"
+              class="btn delete"
+              disabled={profiles.busy}
+              onclick={deleteAccount}
+            >
+              Delete account
+            </button>
+          </div>
+        {:else}
+          <button type="button" class="btn delete" disabled={profiles.busy} onclick={startDelete}>
+            Delete account
           </button>
-          <button type="button" class="btn delete" disabled={profiles.busy} onclick={deleteUser}>
-            Delete
-          </button>
-        </div>
-      {:else}
-        <button
-          type="button"
-          class="btn delete"
-          disabled={!profiles.current || profiles.busy}
-          onclick={() => {
-            deleteError = null;
-            confirmingDelete = true;
-          }}
-        >
-          Delete user
-        </button>
-      {/if}
-      {#if deleteError}<p class="error" role="alert">{deleteError}</p>{/if}
-    </section>
+        {/if}
+      </section>
+    {/if}
   </div>
 {/if}
 
@@ -378,8 +379,19 @@
     color: var(--plum);
   }
 
+  .account {
+    margin: 0;
+  }
+
+  .password {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s1);
+  }
+
   select,
-  input[type='text'] {
+  input[type='text'],
+  input[type='password'] {
     min-height: 42px;
     padding: var(--s1) var(--s2);
     background: var(--white);
@@ -452,14 +464,6 @@
 
   .name-row .icon {
     flex: none;
-  }
-
-  .die {
-    fill: var(--ink);
-  }
-
-  .face {
-    fill: var(--white);
   }
 
   /* Last thing in the panel, pushed to the bottom when there is room. */

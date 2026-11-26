@@ -35,23 +35,50 @@ describe('SettingsPanel', () => {
     expect((screen.getByLabelText(/Display name/) as HTMLInputElement).value).toBe(identity.name);
   });
 
+  it('shows nothing account-related when logged out', () => {
+    render(SettingsPanel, { open: true });
+    expect(screen.getByLabelText(/Display name/)).toBeInTheDocument();
+    expect(screen.queryByText(/Logged in as/)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Log out' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Delete account' })).toBeNull();
+    expect(screen.queryByLabelText('Password')).toBeNull();
+  });
+
+  it('shows who is logged in and logs out', async () => {
+    const logOut = vi.spyOn(profiles, 'logOut').mockResolvedValue();
+    profiles.current = 'Ada';
+    render(SettingsPanel, { open: true });
+    expect(screen.getByText('Logged in as Ada')).toBeInTheDocument();
+    await fireEvent.click(screen.getByRole('button', { name: 'Log out' }));
+    expect(logOut).toHaveBeenCalledOnce();
+  });
+
   it('deletes the account after confirming with the password', async () => {
     const remove = vi.spyOn(profiles, 'deleteAccount').mockResolvedValue(null);
     profiles.current = 'Ada';
     render(SettingsPanel, { open: true });
-    await fireEvent.click(screen.getByRole('button', { name: 'Delete user' }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Delete account' }));
+    await fireEvent.input(screen.getByLabelText('Password'), { target: { value: 'hunter22' } });
     await fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     expect(remove).not.toHaveBeenCalled();
+    expect(screen.queryByLabelText('Password')).toBeNull();
 
-    await fireEvent.click(screen.getByRole('button', { name: 'Delete user' }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Delete account' }));
+    expect(screen.getByLabelText('Password')).toHaveValue('');
     await fireEvent.input(screen.getByLabelText('Password'), { target: { value: 'hunter22' } });
-    await fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Delete account' }));
     expect(remove).toHaveBeenCalledWith('hunter22');
   });
 
-  it('cannot delete when logged out', async () => {
+  it('shows a wrong password inline and stays logged in', async () => {
+    vi.spyOn(profiles, 'deleteAccount').mockResolvedValue('Wrong password.');
+    profiles.current = 'Ada';
     render(SettingsPanel, { open: true });
-    expect(screen.getByRole('button', { name: 'Delete user' })).toBeDisabled();
+    await fireEvent.click(screen.getByRole('button', { name: 'Delete account' }));
+    await fireEvent.input(screen.getByLabelText('Password'), { target: { value: 'nope' } });
+    await fireEvent.click(screen.getByRole('button', { name: 'Delete account' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Wrong password.');
+    expect(screen.getByText('Logged in as Ada')).toBeInTheDocument();
   });
 
   it('saves the name on Enter and rejects an empty one', async () => {
