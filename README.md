@@ -24,9 +24,10 @@ drink is ready and so are you.
   Owners can promote a guest to co-owner. If the owner leaves, the timer keeps
   going and the longest-standing guest takes over.
 
-There are no passwords. Pick or create a username and your settings are saved
-under it on the server, so you get the same ones on every device; anyone who
-can open the site can pick or delete any user. Without a username everything
+Accounts are optional. Sign up with a username and a password and your settings
+are saved under it on the server, so you get the same ones on every device.
+Logging in on another device logs the first one out; if that one was in a
+shared timer, the new device takes its place. Without an account everything
 still works locally: settings, to-dos and saved mixes live in your browser.
 
 ## How it is built
@@ -51,15 +52,21 @@ docker build -t cafe-timer .
 docker run --rm -p 8080:8080 -v cafe-data:/data cafe-timer
 ```
 
-Profiles are saved in `profiles.json` under `DATA_DIR` (`/data` in the
-container, `./data` when running the binary directly). Without the `-v` the
-profiles are lost when the container is removed. A host folder works too, if
-uid 65534 can write to it.
+Accounts are saved in `profiles.json` under `DATA_DIR` (`/data` in the
+container, `./data` when running the binary directly). The file holds password
+hashes and login sessions, so keep it private. Without the `-v` the accounts
+are lost when the container is removed. A host folder works too, if uid 65534
+can write to it.
+
+Upgrading from an older file (one without passwords) sets every existing
+user's password to `12345678`. Ask those users to change it in Settings.
 
 Then open <http://localhost:8080>. `compose.yml` is set up for running behind
 a reverse proxy on a shared Docker network, and
 [deploy/Caddyfile.example](deploy/Caddyfile.example) is a matching Caddy site
-block.
+block. It sets `TRUST_PROXY=1`, so login rate limits read the client address
+from the proxy's `X-Forwarded-For` header. Only keep that on behind a proxy
+that sets the header; otherwise a client can choose its own address.
 
 ## Develop
 

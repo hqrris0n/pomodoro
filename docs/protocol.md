@@ -3,7 +3,7 @@
 The app is local-first: a timer runs entirely in the browser and keeps working
 if the server is unreachable. The server only lets people see and join each
 other's timers. It keeps rooms in memory; a restart empties them and
-clients re-create their rooms. Profiles are the exception (see below).
+clients re-create their rooms. Accounts are the exception (see below).
 
 Transport: JSON over HTTP `POST`/`PATCH` for commands, one Server-Sent Events
 stream per client for updates. Go standard library only.
@@ -15,6 +15,11 @@ it. The server never shows a token to anyone else; a member's public `id` is
 the first 12 hex chars of `sha256(token)`. Commands carry the token in the
 `Authorization: Bearer <token>` header. The SSE stream carries it as
 `?token=` because `EventSource` cannot set headers.
+
+A signed-in account also has a session cookie, `cafe_session`, set by the
+auth routes (see Accounts). It sits alongside the token: every command still
+needs the token, and the cookie says which account the browser is signed in
+to.
 
 ## Timer state
 
@@ -112,6 +117,10 @@ In `PATCH`, a missing `timer` keeps the timer and `"timer": null` clears it;
   was removed.
 - `note` — `{id, roomId, fromId, fromName, text, sentAt}` (`sentAt` is server
   epoch ms). A sticky note sent to the caller; see below.
+- `session` — `{now, state: "revoked"}`. Sent to the device whose live session
+  was ended by a login on another device, if it has an open stream. The client
+  signs out locally, keeps its settings and says it was signed in elsewhere.
+  Its next account request would get 401 anyway.
 - A comment line `: ping` every 25s to keep proxies from closing the stream.
 
 ## Shared mixes
@@ -187,57 +196,148 @@ whatever their roles. Notes are not part of `Room` or `RoomSummary`.
   Notes are held in memory only. Keeping a note on screen until dismissed is
   the client's job.
 
-## Profiles
+## Accounts
 
-A profile stores a display name and a bag of settings under a username, so the
-same user gets the same settings on every device. There are no passwords:
-anyone who can reach the server can read, replace or delete any profile. The
-client decides which keys go in `settings`; the server treats it as opaque.
+An account stores a display name and a bag of settings under a username, so
+the same user gets the same settings on every device. Each account has a
+password and at most one session at a time. The client decides which keys go
+in `settings`; the server treats it as opaque.
 
 ```ts
 type Profile = {
-  username: string;    // as first created; cannot be renamed
+  username: string; // as first created; cannot be renamed
   displayName: string;
   settings: Record<string, unknown>; // any JSON object
-  updatedAt: number;   // server epoch ms
+  updatedAt: number; // server epoch ms
 };
 ```
 
-| Method and path                | Body                                     | Success |
-| ------------------------------ | ---------------------------------------- | ------- |
-| `GET /profiles`                | —                                        | `200 {profiles: {username, displayName}[]}`, sorted by username ignoring case. |
-| `GET /profiles/{username}`     | —                                        | `200 Profile`. 404 `no such profile`. |
-| `POST /profiles`               | `{username, displayName?, settings}`     | `201 Profile`. `displayName` defaults to the trimmed username. 409 `that username is taken`; 429 `too many profiles`. |
-| `PUT /profiles/{username}`     | `{displayName, settings}` (both required) | `200 {updatedAt}`. Replaces both. 404 if missing. |
-| `DELETE /profiles/{username}`  | —                                        | `200 {}`. 404 if missing. |
+All paths are under `/api`. All need the `Authorization: Bearer <token>`
+header and count toward the per-token command limit. Every one of them
+answers 503 `profiles are unavailable` if the store is disabled (see Storage).
 
-All of these need the `Authorization: Bearer <token>` header and count toward
-the same per-token rate limit as commands.
+| Method and path         | Body                                            | Success                                                                                                   | Errors                                                                                                                                                                                                     |
+| ----------------------- | ----------------------------------------------- | --------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /auth/signup`     | `{username, password, displayName?, settings?}` | `201 Profile` and the session cookie. `displayName` defaults to the trimmed username, `settings` to `{}`. | 400 validation, including `Password must be at least 8 characters.` and `Password must be at most 72 characters.`; 409 `That username is taken.`; 429 `Too many accounts` (50 accounts) or the rate limit. |
+| `POST /auth/login`      | `{username, password}`                          | `200 Profile` and the session cookie. Replaces the account's session.                                     | 401 `Wrong username or password.` (the same for an unknown username); 429 rate limit.                                                                                                                      |
+| `POST /auth/logout`     | —                                               | `200 {}`. Ends the session and clears the cookie.                                                         |                                                                                                                                                                                                            |
+| `GET /account`          | —                                               | `200 Profile`. Re-sends the cookie.                                                                       | 401 `Not signed in.`                                                                                                                                                                                       |
+| `PUT /account`          | `{displayName, settings}` (both required)       | `200 {updatedAt}`. Re-sends the cookie.                                                                   | 400 invalid name or settings; 401 `Not signed in.`                                                                                                                                                         |
+| `DELETE /account`       | `{password}`                                    | `200 {}`. Deletes the account and clears the cookie.                                                      | 401 `Wrong password.` or `Not signed in.`; 429 rate limit.                                                                                                                                                 |
+| `PUT /account/password` | `{current, new}`                                | `200 {}` and a new session cookie. The old session token stops working; this browser stays signed in.     | 400 length (checked before the current password); 401 `Wrong password.` or `Not signed in.`; 429 rate limit.                                                                                               |
+
+`GET /api/profiles` and the other `/api/profiles` routes are gone; they now
+answer 404.
+
+Settings must be a JSON object (`null`, arrays and strings are 400
+`settings must be a JSON object`). It is stored compacted and returned as
+stored. Over 256 KB (262144 bytes) compacted is 400 `settings too large`.
+`POST /auth/signup` and `PUT /account` bodies may be up to 260 KB; other
+requests are limited to 4 KB as usual.
 
 - Usernames are trimmed and must be 1 to 24 Unicode code points with no
   control characters (400 otherwise). Uniqueness and lookup ignore case
   (`Ada` and `ada` are the same user); the username as first created is the
   one returned. `displayName` follows the same rule as room names.
-- `settings` must be a JSON object (`null`, arrays and strings are 400
-  `settings must be a JSON object`). It is stored compacted and returned as
-  stored. Over 256 KB (262144 bytes) compacted is 400 `settings too large`.
-  `POST` and `PUT` bodies may be up to 260 KB; other requests are limited to
-  4 KB as usual.
-- At most 20 profiles.
+- Passwords must be 8 to 72 Unicode code points. There are no other rules.
+- At most 50 accounts.
 - `updatedAt` is the server time of the last change and strictly increases for
-  a profile, so clients can compare it.
+  an account, so clients can compare it.
 
-Unlike rooms, profiles are persistent. They live in one file,
-`profiles.json`, in the data directory (`DATA_DIR` or `-data`, `/data` in the
-container): `{"version":1,"profiles":[{username, displayName, settings, updatedAt}, …]}`.
-Every successful create, replace or delete rewrites it by writing a temporary
-file in the same directory, syncing it and renaming it over the old one. If
-that fails the change is rolled back and the request is 500
+### Sessions and cookies
+
+A successful sign-up, login or password change sets the `cafe_session` cookie.
+The per-browser `token` is still required on every command; the cookie only
+says which account the browser is signed in to.
+
+- The session token is 32 random bytes, sent as 64 hex characters. The server
+  keeps only its SHA-256.
+- Cookie: `HttpOnly; Secure; SameSite=Strict; Path=/api; Max-Age=2592000`
+  (30 days). Every successful `GET` and `PUT /api/account` sends it again.
+- The server-side expiry is renewed when it is more than a day behind, so a
+  session lasts 29 to 30 days after its last use.
+- One session per account. A login, sign-up or password change gives the
+  account a new session and ends the old one: the newest login wins.
+- Sessions are stored in `profiles.json`, so they survive a restart.
+
+### Rate limits
+
+Password checks and sign-in have their own limits, separate from the command
+limit. Both return 429 `Too many attempts. Wait a minute and try again.`
+
+- Per username: after 5 failed password checks (a wrong login, or a wrong
+  password on delete or password change) in a rolling minute, login, delete
+  and password change for that username are refused, even with the right
+  password, until the failures age out.
+- Per client address: at most 20 sign-up, login and password-change attempts
+  per rolling minute. Every attempt counts, not only failures.
+- The client address is the host of the connection's address. With
+  `-trust-proxy` (or `TRUST_PROXY=1`, set in `compose.yml`) it is instead the
+  rightmost `X-Forwarded-For` entry. Only turn this on behind a proxy that sets
+  that header; otherwise a client can choose its own address.
+
+### Storage
+
+Accounts live in one file, `profiles.json`, in the data directory (`DATA_DIR`
+or `-data`, `/data` in the container):
+`{"version":2,"profiles":[{username, displayName, settings, updatedAt, passwordHash, sessionHash, sessionExpires, sessionGen}, …]}`.
+
+- `passwordHash` is `pbkdf2-sha256$<iterations>$<salt b64>$<hash b64>`:
+  PBKDF2-SHA256, 600,000 iterations, a 16-byte random salt. Passwords are
+  compared in constant time. An unknown username is checked against a dummy
+  hash, so it takes as long as a wrong password.
+- At most two hashes run at once.
+- `sessionHash` is the hex SHA-256 of the session token (`""` when signed out),
+  `sessionExpires` is unix ms, and `sessionGen` counts the account's sessions.
+
+Every successful create, replace or delete rewrites the file by writing a
+temporary file in the same directory, syncing it and renaming it over the old
+one. If that fails the change is rolled back and the request is 500
 `could not save profiles`. A missing file is an empty store. If the file or
 directory cannot be read, or the file is corrupt (invalid JSON, wrong shape,
 usernames that collide ignoring case), the server logs it, leaves the file
-untouched and answers every `/profiles` request with 503
+untouched and answers every account request with 503
 `profiles are unavailable` until it is fixed and the server restarted.
+
+### Migration from version 1
+
+A version 1 file has no passwords. On load every account keeps its settings
+and display name and gets the password `12345678`. The file is rewritten as
+version 2 on the first change.
+
+**Risk:** anyone who knows that default can sign in to a migrated account
+until its owner changes the password. Nothing forces a reset, so tell users to
+change it in Settings after the upgrade.
+
+### One server process
+
+Sign-up uniqueness, the one-session rule and the room handover rely on locks
+inside one process. Run one server process per data file; several replicas
+sharing a `profiles.json` are not supported.
+
+## Signing in on another device
+
+The server links each account to the device token that holds its session. The
+link is made by sign-up, login, password change, and `GET` or `PUT
+/api/account`. It is kept in memory, not in `profiles.json`, so after a restart
+it is made again the next time that device calls one of those routes.
+
+When a login replaces a live session and the old device is in a room:
+
+1. The old device gets a `session` SSE event (see SSE events).
+2. The new device takes over the old device's member entry in place: same
+   name, role (host, co-host or guest), join time and position, whatever the
+   timer is doing. Before that it leaves any room it was in, under the usual
+   leave rules.
+3. The old device rejoins the room as a guest under its own name, if there is
+   space (20 members). If the room is full, it leaves.
+
+The member's public `id` changes, because it derives from the device token.
+If the old device was in no room, only step 1 happens.
+
+If two logins race, the per-account session generation decides: the device
+with the surviving session ends up with the role, whatever order the requests
+reach the server in.
 
 ## Lifecycle rules
 
