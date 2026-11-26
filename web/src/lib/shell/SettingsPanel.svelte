@@ -105,7 +105,15 @@
 
   async function deleteAccount() {
     deleteError = await profiles.deleteAccount(deletePassword);
-    if (!deleteError) cancelDelete();
+    if (!deleteError) {
+      cancelDelete();
+      dialog?.focus(); // the focused controls are gone; keep Escape working
+    }
+  }
+
+  async function logOut() {
+    await profiles.logOut();
+    dialog?.focus(); // the focused controls are gone; keep Escape working
   }
 
   function onNameKey(e: KeyboardEvent) {
@@ -241,12 +249,7 @@
           {#if passwordChanged}<p class="sub" role="status">Password changed.</p>{/if}
           <button type="submit" class="btn" disabled={profiles.busy}>Save</button>
         </form>
-        <button
-          type="button"
-          class="btn"
-          disabled={profiles.busy}
-          onclick={() => void profiles.logOut()}
-        >
+        <button type="button" class="btn" disabled={profiles.busy} onclick={logOut}>
           Log out
         </button>
       {/if}

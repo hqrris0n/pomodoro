@@ -97,6 +97,9 @@ describe('SettingsPanel', () => {
     expect(screen.getByText('Logged in as Ada')).toBeInTheDocument();
     await fireEvent.click(screen.getByRole('button', { name: 'Log out' }));
     expect(logOut).toHaveBeenCalledOnce();
+    // The Log out button goes away with the logged-in controls; focus must stay in
+    // the dialog so Escape still closes it.
+    await vi.waitFor(() => expect(screen.getByRole('dialog')).toHaveFocus());
   });
 
   it('deletes the account after confirming with the password', async () => {
