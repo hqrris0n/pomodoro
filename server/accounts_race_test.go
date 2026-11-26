@@ -2,6 +2,8 @@ package main
 
 import (
 	"errors"
+	"net/http"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -223,5 +225,67 @@ func TestPBKDF2LimitedToTwo(t *testing.T) {
 	<-s.sem // one hash "finishes"
 	if r := <-c; r.err != nil {
 		t.Fatalf("login after a slot freed: %v", r.err)
+	}
+}
+
+func raceBearer(i int) string { return tok(5000 + i) }
+
+func raceCreds(name string) string {
+	return `{"username":"` + name + `","password":"` + racePW + `"}`
+}
+
+func TestRaceSignUpSameNameHTTP(t *testing.T) {
+	for it := range repeatCount() {
+		srv, ps, _ := newRaceServer(t)
+		res := race(raceN, func(i int) raceResp {
+			return fire(srv, "POST", "/api/auth/signup", raceCreds(raceNames[i]), raceBearer(i), "")
+		})
+		wins := 0
+		for i, r := range res {
+			switch {
+			case r.Err != nil:
+				t.Fatalf("iter %d request %d: %v", it, i, r.Err)
+			case r.Status == http.StatusCreated:
+				wins++
+			case r.Status != http.StatusConflict || r.Body != `{"error":"That username is taken."}`+"\n":
+				t.Fatalf("iter %d request %d: %d %s, want 409 taken", it, i, r.Status, r.Body)
+			}
+		}
+		if wins != 1 || len(ps.m) != 1 {
+			t.Fatalf("iter %d: %d created, %d accounts, want 1 and 1", it, wins, len(ps.m))
+		}
+	}
+}
+
+func TestRaceLoginOneCookieSurvivesHTTP(t *testing.T) {
+	for it := range repeatCount() {
+		srv, _, _ := newRaceServer(t)
+		first := fire(srv, "POST", "/api/auth/signup", raceCreds("ada"), raceBearer(100), "")
+		if first.Status != http.StatusCreated {
+			t.Fatalf("iter %d signup: %d %s", it, first.Status, first.Body)
+		}
+		res := race(raceN, func(i int) raceResp {
+			return fire(srv, "POST", "/api/auth/login", raceCreds("ada"), raceBearer(i), "")
+		})
+		cookies := []string{cookiePair(first.SetCookie)}
+		for i, r := range res {
+			if r.Status != http.StatusOK || !strings.HasPrefix(r.SetCookie, "cafe_session=") {
+				t.Fatalf("iter %d login %d: %d %s %q", it, i, r.Status, r.Body, r.SetCookie)
+			}
+			cookies = append(cookies, cookiePair(r.SetCookie))
+		}
+		valid := 0
+		for i, c := range cookies {
+			switch r := fire(srv, "GET", "/api/account", "", raceBearer(200+i), c); r.Status {
+			case http.StatusOK:
+				valid++
+			case http.StatusUnauthorized:
+			default:
+				t.Fatalf("iter %d cookie %d: %d %s", it, i, r.Status, r.Body)
+			}
+		}
+		if valid != 1 {
+			t.Fatalf("iter %d: %d valid cookies, want 1", it, valid)
+		}
 	}
 }

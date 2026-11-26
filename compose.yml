@@ -26,6 +26,9 @@ services:
     # also mount your own folders over the built-in ones:
     #   - ./web/public/drinks:/public/drinks:ro
     #   - ./web/public/sounds:/public/sounds:ro
+    environment:
+      # Caddy sits in front: take the client address from X-Forwarded-For for login rate limits.
+      TRUST_PROXY: "1"
     volumes:
       - cafe-data:/data
     networks: [proxy]

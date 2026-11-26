@@ -45,7 +45,7 @@ func newEnv(t *testing.T) *testEnv {
 	}
 	h, clk := newTestHub()
 	ps := openProfilesIter(filepath.Join(root, "data"), clk.Now, t.Logf, testPBKDF2Iter)
-	srv := httptest.NewServer(newHandler(h, ps, dir))
+	srv := httptest.NewServer(newHandler(h, ps, dir, testOpts))
 	t.Cleanup(srv.Close)
 	t.Cleanup(h.CloseStreams)
 	return &testEnv{h: h, clk: clk, srv: srv, dir: dir, p: ps}
@@ -290,7 +290,7 @@ func TestStatic(t *testing.T) {
 // the mux would clean most of these paths before they got that far.
 func TestStaticCannotEscape(t *testing.T) {
 	e := newEnv(t)
-	h := newHandler(e.h, e.p, e.dir)
+	h := newHandler(e.h, e.p, e.dir, testOpts)
 	for _, p := range []string{
 		"/../secret.txt", "/..%2fsecret.txt", "/assets/../../secret.txt",
 		"/%2e%2e/secret.txt", "/..\\secret.txt", "/../etc/passwd", "//secret.txt",

@@ -13,8 +13,8 @@ const maxBodyBytes = 4 << 10
 
 // newAPI returns the /api routes. Unknown /api paths answer 404 JSON and never
 // fall through to the static files.
-func newAPI(h *hub, p *profileStore) http.Handler {
-	a := &api{h: h, p: p}
+func newAPI(h *hub, p *profileStore, o apiOptions) http.Handler {
+	a := &api{h: h, p: p, lim: newLimiter(h.now, o), trustProxy: o.trustProxy}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, "ok\n")
@@ -27,11 +27,12 @@ func newAPI(h *hub, p *profileStore) http.Handler {
 	mux.HandleFunc("POST /api/rooms/{id}/role", a.command(a.setRole))
 	mux.HandleFunc("POST /api/rooms/{id}/notes", a.command(a.note))
 	mux.HandleFunc("PUT /api/me", a.command(a.rename))
-	mux.HandleFunc("GET /api/profiles", a.command(a.listProfiles))
-	mux.HandleFunc("GET /api/profiles/{username}", a.command(a.getProfile))
-	mux.HandleFunc("POST /api/profiles", a.commandLimit(profileBodyBytes, a.createProfile))
-	mux.HandleFunc("PUT /api/profiles/{username}", a.commandLimit(profileBodyBytes, a.putProfile))
-	mux.HandleFunc("DELETE /api/profiles/{username}", a.command(a.deleteProfile))
+	mux.HandleFunc("POST /api/auth/signup", a.commandLimit(profileBodyBytes, a.signup))
+	mux.HandleFunc("POST /api/auth/login", a.command(a.login))
+	mux.HandleFunc("POST /api/auth/logout", a.command(a.logout))
+	mux.HandleFunc("GET /api/account", a.command(a.getAccount))
+	mux.HandleFunc("PUT /api/account", a.commandLimit(profileBodyBytes, a.putAccount))
+	mux.HandleFunc("DELETE /api/account", a.command(a.deleteAccount))
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, 404, map[string]string{"error": "not found"})
 	})
@@ -39,8 +40,10 @@ func newAPI(h *hub, p *profileStore) http.Handler {
 }
 
 type api struct {
-	h *hub
-	p *profileStore
+	h          *hub
+	p          *profileStore
+	lim        *limiter
+	trustProxy bool
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

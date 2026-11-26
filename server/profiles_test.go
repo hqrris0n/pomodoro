@@ -1,8 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -16,8 +19,72 @@ var ptok = tok(77)
 
 func testHubNow() time.Time { return time.UnixMilli(1_700_000_000_000) }
 
-func pbody(username string, settings any) map[string]any {
-	return map[string]any{"username": username, "settings": settings}
+// testOpts raises the per-IP cap so tests can make many attempts from
+// 127.0.0.1; the rate limit tests build their own handler with the defaults.
+var testOpts = apiOptions{ipAttempts: 100_000}
+
+// acctReq is one request for send.
+type acctReq struct {
+	method, path string
+	token        string // Bearer device token; ptok if empty
+	cookie       string // Cookie header, e.g. "cafe_session=..."
+	xff          string // X-Forwarded-For
+	body         any
+}
+
+type acctResp struct {
+	code      int
+	body      string
+	setCookie string
+}
+
+func (e *testEnv) send(t *testing.T, r acctReq) acctResp {
+	t.Helper()
+	var rd io.Reader
+	switch b := r.body.(type) {
+	case nil:
+	case string:
+		rd = strings.NewReader(b)
+	default:
+		raw, _ := json.Marshal(b)
+		rd = bytes.NewReader(raw)
+	}
+	req, _ := http.NewRequest(r.method, e.srv.URL+r.path, rd)
+	if r.token == "" {
+		r.token = ptok
+	}
+	req.Header.Set("Authorization", "Bearer "+r.token)
+	if r.cookie != "" {
+		req.Header.Set("Cookie", r.cookie)
+	}
+	if r.xff != "" {
+		req.Header.Set("X-Forwarded-For", r.xff)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	out, _ := io.ReadAll(resp.Body)
+	return acctResp{resp.StatusCode, string(out), resp.Header.Get("Set-Cookie")}
+}
+
+// cookiePair turns a Set-Cookie header into the Cookie header a browser sends.
+func cookiePair(setCookie string) string { return strings.SplitN(setCookie, ";", 2)[0] }
+
+func (e *testEnv) signup(t *testing.T, username, password string) acctResp {
+	t.Helper()
+	return e.send(t, acctReq{method: "POST", path: "/api/auth/signup", body: map[string]any{"username": username, "password": password}})
+}
+
+func (e *testEnv) login(t *testing.T, username, password string) acctResp {
+	t.Helper()
+	return e.send(t, acctReq{method: "POST", path: "/api/auth/login", body: map[string]any{"username": username, "password": password}})
+}
+
+func (e *testEnv) account(t *testing.T, cookie string) acctResp {
+	t.Helper()
+	return e.send(t, acctReq{method: "GET", path: "/api/account", cookie: cookie})
 }
 
 func decodeProfile(t *testing.T, body string) Profile {
@@ -29,146 +96,239 @@ func decodeProfile(t *testing.T, body string) Profile {
 	return p
 }
 
-func TestProfilesCRUD(t *testing.T) {
+func TestSignUpThenReadAndSaveOwnAccount(t *testing.T) {
 	e := newEnv(t)
-	code, body := e.do(t, "POST", "/api/profiles", ptok, map[string]any{
-		"username": "  Ada ", "settings": map[string]any{"b": 1, "a": []int{1, 2}}})
-	if code != 201 {
-		t.Fatalf("create: %d %s", code, body)
+	r := e.send(t, acctReq{method: "POST", path: "/api/auth/signup", body: map[string]any{
+		"username": "  Ada ", "password": "hunter22", "settings": map[string]any{"b": 1, "a": []int{1, 2}}}})
+	if r.code != 201 {
+		t.Fatalf("signup: %d %s", r.code, r.body)
 	}
-	p := decodeProfile(t, body)
+	p := decodeProfile(t, r.body)
 	if p.Username != "Ada" || p.DisplayName != "Ada" || p.UpdatedAt == 0 || string(p.Settings) != `{"a":[1,2],"b":1}` {
 		t.Fatalf("unexpected profile %+v", p)
 	}
-	e.do(t, "POST", "/api/profiles", ptok, map[string]any{
-		"username": "bob", "displayName": "Bobby", "settings": map[string]any{}})
+	if !strings.HasPrefix(r.setCookie, "cafe_session=") || !strings.HasSuffix(r.setCookie, "; Path=/api; Max-Age=2592000; HttpOnly; Secure; SameSite=Strict") {
+		t.Fatalf("Set-Cookie: %q", r.setCookie)
+	}
+	cookie := cookiePair(r.setCookie)
 
-	code, body = e.do(t, "GET", "/api/profiles", ptok, nil)
-	if code != 200 || body != `{"profiles":[{"username":"Ada","displayName":"Ada"},{"username":"bob","displayName":"Bobby"}]}`+"\n" {
-		t.Fatalf("list: %d %s", code, body)
+	g := e.account(t, cookie)
+	if g.code != 200 || !reflect.DeepEqual(decodeProfile(t, g.body), p) {
+		t.Fatalf("get: %d %s", g.code, g.body)
 	}
-	code, body = e.do(t, "GET", "/api/profiles/ADA", ptok, nil)
-	if code != 200 || decodeProfile(t, body).Username != "Ada" {
-		t.Fatalf("get with other case: %d %s", code, body)
-	}
-	if code, _ = e.do(t, "GET", "/api/profiles/nobody", ptok, nil); code != 404 {
-		t.Fatalf("get missing: %d", code)
+	if g.setCookie != r.setCookie {
+		t.Fatalf("use should re-send the cookie: %q", g.setCookie)
 	}
 
-	first := p.UpdatedAt
-	code, body = e.do(t, "PUT", "/api/profiles/ada", ptok, map[string]any{
-		"displayName": "Ada L", "settings": map[string]any{"z": true}})
-	if code != 200 {
-		t.Fatalf("put: %d %s", code, body)
-	}
+	put := e.send(t, acctReq{method: "PUT", path: "/api/account", cookie: cookie, body: map[string]any{
+		"displayName": "Ada L", "settings": map[string]any{"z": true}}})
 	var up struct{ UpdatedAt int64 }
-	_ = json.Unmarshal([]byte(body), &up)
-	if up.UpdatedAt <= first {
-		t.Fatalf("updatedAt did not increase: %d then %d", first, up.UpdatedAt)
+	_ = json.Unmarshal([]byte(put.body), &up)
+	if put.code != 200 || up.UpdatedAt <= p.UpdatedAt || put.setCookie != r.setCookie {
+		t.Fatalf("put: %d %s cookie %q", put.code, put.body, put.setCookie)
 	}
-	_, body = e.do(t, "GET", "/api/profiles/Ada", ptok, nil)
-	got := decodeProfile(t, body)
+	got := decodeProfile(t, e.account(t, cookie).body)
 	if got.DisplayName != "Ada L" || string(got.Settings) != `{"z":true}` || got.Username != "Ada" || got.UpdatedAt != up.UpdatedAt {
 		t.Fatalf("after put: %+v", got)
 	}
-
-	if code, body = e.do(t, "DELETE", "/api/profiles/ADA", ptok, nil); code != 200 || body != "{}\n" {
-		t.Fatalf("delete: %d %s", code, body)
-	}
-	if code, _ = e.do(t, "DELETE", "/api/profiles/ada", ptok, nil); code != 404 {
-		t.Fatalf("delete missing: %d", code)
-	}
 }
 
-func TestProfilesRequireToken(t *testing.T) {
+func TestSignUpDefaultsAndExplicitDisplayName(t *testing.T) {
 	e := newEnv(t)
-	if code, _ := e.do(t, "GET", "/api/profiles", "", nil); code != 400 {
-		t.Fatalf("no token: %d", code)
+	r := e.send(t, acctReq{method: "POST", path: "/api/auth/signup", body: map[string]any{
+		"username": "bob", "password": "hunter22", "displayName": "Bobby"}})
+	p := decodeProfile(t, r.body)
+	if r.code != 201 || p.DisplayName != "Bobby" || string(p.Settings) != `{}` {
+		t.Fatalf("%d %s", r.code, r.body)
 	}
 }
 
-func TestProfileDuplicateIgnoresCase(t *testing.T) {
+func TestSignUpErrors(t *testing.T) {
 	e := newEnv(t)
-	e.do(t, "POST", "/api/profiles", ptok, pbody("Ada", map[string]any{}))
-	code, body := e.do(t, "POST", "/api/profiles", ptok, pbody("aDA", map[string]any{}))
-	if code != 409 || !strings.Contains(body, "That username is taken.") {
-		t.Fatalf("dup: %d %s", code, body)
+	if r := e.signup(t, "Ada", "hunter22"); r.code != 201 {
+		t.Fatal(r.code, r.body)
+	}
+	path := filepath.Join(filepath.Dir(e.dir), "data", profilesFile)
+	before, _ := os.ReadFile(path)
+
+	r := e.signup(t, "ADA", "otherpass1")
+	if r.code != 409 || r.body != `{"error":"That username is taken."}`+"\n" || r.setCookie != "" {
+		t.Fatalf("taken: %d %s %q", r.code, r.body, r.setCookie)
+	}
+	if after, _ := os.ReadFile(path); string(after) != string(before) {
+		t.Fatal("profiles.json changed by a rejected sign-up")
+	}
+	r = e.signup(t, "bob", "1234567")
+	if r.code != 400 || r.body != `{"error":"Password must be at least 8 characters."}`+"\n" {
+		t.Fatalf("short password: %d %s", r.code, r.body)
 	}
 }
 
-func TestProfileLimit(t *testing.T) {
+func TestSignUpAccountCap(t *testing.T) {
 	e := newEnv(t)
 	for i := 0; i < maxProfiles; i++ {
-		e.clk.Advance(rateWindow) // stay under the request rate limit
-		if code, body := e.do(t, "POST", "/api/profiles", ptok, pbody(fmt.Sprintf("u%d", i), map[string]any{})); code != 201 {
-			t.Fatalf("create %d: %d %s", i, code, body)
+		e.clk.Advance(rateWindow) // stay under the device rate limit
+		if r := e.signup(t, fmt.Sprintf("u%d", i), "hunter22"); r.code != 201 {
+			t.Fatalf("create %d: %d %s", i, r.code, r.body)
 		}
 	}
-	code, body := e.do(t, "POST", "/api/profiles", ptok, pbody("extra", map[string]any{}))
-	if code != 429 || !strings.Contains(body, "Too many accounts") {
-		t.Fatalf("limit: %d %s", code, body)
+	r := e.signup(t, "extra", "hunter22")
+	if r.code != 429 || r.body != `{"error":"Too many accounts"}`+"\n" {
+		t.Fatalf("limit: %d %s", r.code, r.body)
 	}
 }
 
-func TestProfileSettingsValidation(t *testing.T) {
+func TestLoginFailuresShareMessageOverHTTP(t *testing.T) {
 	e := newEnv(t)
-	for _, raw := range []string{`null`, `[]`, `"x"`, `5`, ``} {
-		body := `{"username":"a","settings":` + raw + `}`
-		if raw == "" {
-			body = `{"username":"a"}`
+	e.signup(t, "ada", "hunter22")
+	a, b := e.login(t, "ada", "wrongpass1"), e.login(t, "nobody", "hunter22")
+	want := `{"error":"Wrong username or password."}` + "\n"
+	if a.code != 401 || b.code != 401 || a.body != want || b.body != want || a.setCookie != "" {
+		t.Fatalf("%d %q / %d %q", a.code, a.body, b.code, b.body)
+	}
+}
+
+func TestLoginOnAnotherDeviceEndsTheFirstSession(t *testing.T) {
+	e := newEnv(t)
+	cookieA := cookiePair(e.signup(t, "Ada", "hunter22").setCookie)
+	r := e.login(t, "ada", "hunter22")
+	if r.code != 200 || decodeProfile(t, r.body).Username != "Ada" {
+		t.Fatalf("login: %d %s", r.code, r.body)
+	}
+	cookieB := cookiePair(r.setCookie)
+	if a := e.account(t, cookieA); a.code != 401 || a.body != `{"error":"Not signed in."}`+"\n" {
+		t.Fatalf("device A: %d %s", a.code, a.body)
+	}
+	if b := e.account(t, cookieB); b.code != 200 {
+		t.Fatalf("device B: %d %s", b.code, b.body)
+	}
+}
+
+func TestLogoutClearsCookieAndSession(t *testing.T) {
+	e := newEnv(t)
+	cookie := cookiePair(e.signup(t, "ada", "hunter22").setCookie)
+	r := e.send(t, acctReq{method: "POST", path: "/api/auth/logout", cookie: cookie})
+	if r.code != 200 || r.body != "{}\n" || !strings.Contains(r.setCookie, "cafe_session=;") || !strings.Contains(r.setCookie, "Max-Age=0") {
+		t.Fatalf("logout: %d %s %q", r.code, r.body, r.setCookie)
+	}
+	if a := e.account(t, cookie); a.code != 401 {
+		t.Fatalf("old cookie: %d", a.code)
+	}
+	// Logging out again, or with no cookie at all, still succeeds and clears.
+	for _, c := range []string{cookie, ""} {
+		if r := e.send(t, acctReq{method: "POST", path: "/api/auth/logout", cookie: c}); r.code != 200 || !strings.Contains(r.setCookie, "Max-Age=0") {
+			t.Fatalf("repeat logout with %q: %d %q", c, r.code, r.setCookie)
 		}
-		if code, out := e.do(t, "POST", "/api/profiles", ptok, body); code != 400 || !strings.Contains(out, "settings must be a JSON object") {
-			t.Errorf("settings %q: %d %s", raw, code, out)
+	}
+}
+
+func TestDeleteAccount(t *testing.T) {
+	e := newEnv(t)
+	cookie := cookiePair(e.signup(t, "ada", "hunter22").setCookie)
+	del := func(pw string) acctResp {
+		return e.send(t, acctReq{method: "DELETE", path: "/api/account", cookie: cookie, body: map[string]any{"password": pw}})
+	}
+	if r := del("wrongpass1"); r.code != 401 || r.body != `{"error":"Wrong password."}`+"\n" || r.setCookie != "" {
+		t.Fatalf("wrong password: %d %s", r.code, r.body)
+	}
+	if a := e.account(t, cookie); a.code != 200 {
+		t.Fatalf("account should remain: %d", a.code)
+	}
+	if r := del("hunter22"); r.code != 200 || r.body != "{}\n" || !strings.Contains(r.setCookie, "Max-Age=0") {
+		t.Fatalf("delete: %d %s %q", r.code, r.body, r.setCookie)
+	}
+	if a := e.account(t, cookie); a.code != 401 {
+		t.Fatalf("after delete: %d", a.code)
+	}
+	if r := e.login(t, "ada", "hunter22"); r.code != 401 {
+		t.Fatalf("login after delete: %d", r.code)
+	}
+}
+
+func TestAccountNeedsValidSession(t *testing.T) {
+	e := newEnv(t)
+	cookie := cookiePair(e.signup(t, "ada", "hunter22").setCookie)
+	body := map[string]any{"displayName": "x", "settings": map[string]any{}}
+	e.clk.Advance(sessionTTL + time.Second)
+	for name, c := range map[string]string{"none": "", "unknown": "cafe_session=" + strings.Repeat("0", 64), "expired": cookie} {
+		for _, req := range []acctReq{
+			{method: "GET", path: "/api/account"},
+			{method: "PUT", path: "/api/account", body: body},
+			{method: "DELETE", path: "/api/account", body: map[string]any{"password": "hunter22"}},
+		} {
+			req.cookie = c
+			if r := e.send(t, req); r.code != 401 || r.body != `{"error":"Not signed in."}`+"\n" {
+				t.Errorf("%s %s %s: %d %s", name, req.method, req.path, r.code, r.body)
+			}
+		}
+	}
+	// The per-browser token is still required.
+	if code, _ := e.do(t, "GET", "/api/account", "", nil); code != 400 {
+		t.Errorf("no device token: %d", code)
+	}
+}
+
+func TestOldProfileRoutesAreGone(t *testing.T) {
+	e := newEnv(t)
+	e.signup(t, "ada", "hunter22")
+	for _, req := range [][2]string{{"GET", "/api/profiles"}, {"GET", "/api/profiles/ada"}, {"POST", "/api/profiles"}, {"PUT", "/api/profiles/ada"}, {"DELETE", "/api/profiles/ada"}} {
+		if code, _ := e.do(t, req[0], req[1], ptok, nil); code != 404 {
+			t.Errorf("%v: %d, want 404", req, code)
+		}
+	}
+}
+
+func TestAccountSettingsValidation(t *testing.T) {
+	e := newEnv(t)
+	signup := func(raw string) acctResp {
+		body := `{"username":"a","password":"hunter22","settings":` + raw + `}`
+		return e.send(t, acctReq{method: "POST", path: "/api/auth/signup", body: body})
+	}
+	for _, raw := range []string{`null`, `[]`, `"x"`, `5`} {
+		if r := signup(raw); r.code != 400 || !strings.Contains(r.body, "settings must be a JSON object") {
+			t.Errorf("settings %q: %d %s", raw, r.code, r.body)
 		}
 	}
 	// Just over the limit once compacted.
 	big := `{"k":"` + strings.Repeat("x", maxSettingsBytes) + `"}`
-	if code, out := e.do(t, "POST", "/api/profiles", ptok, `{"username":"a","settings":`+big+`}`); code != 400 || !strings.Contains(out, "settings too large") {
-		t.Errorf("big: %d %s", code, out)
+	if r := signup(big); r.code != 400 || !strings.Contains(r.body, "settings too large") {
+		t.Errorf("big: %d %s", r.code, r.body)
 	}
 	// Exactly at the limit is fine.
 	ok := `{"k":"` + strings.Repeat("x", maxSettingsBytes-8) + `"}`
-	if len(ok) != maxSettingsBytes {
-		t.Fatalf("test setup: %d", len(ok))
+	r := signup(ok)
+	if r.code != 201 {
+		t.Fatalf("at limit: %d %.100s", r.code, r.body)
 	}
-	if code, out := e.do(t, "POST", "/api/profiles", ptok, `{"username":"a","settings":`+ok+`}`); code != 201 {
-		t.Errorf("at limit: %d %.100s", code, out)
-	}
+	cookie := cookiePair(r.setCookie)
 	// Past the request body limit.
-	huge := `{"username":"b","settings":{"k":"` + strings.Repeat("x", profileBodyBytes) + `"}}`
-	if code, out := e.do(t, "POST", "/api/profiles", ptok, huge); code != 400 || !strings.Contains(out, "body too large") {
-		t.Errorf("huge: %d %s", code, out)
+	huge := `{"displayName":"x","settings":{"k":"` + strings.Repeat("x", profileBodyBytes) + `"}}`
+	if r := e.send(t, acctReq{method: "PUT", path: "/api/account", cookie: cookie, body: huge}); r.code != 400 || !strings.Contains(r.body, "body too large") {
+		t.Errorf("huge: %d %s", r.code, r.body)
 	}
-	if code, _ := e.do(t, "PUT", "/api/profiles/a", ptok, `{"displayName":"x"}`); code != 400 {
-		t.Errorf("put without settings: %d", code)
-	}
-	if code, _ := e.do(t, "PUT", "/api/profiles/a", ptok, `{"settings":{}}`); code != 400 {
-		t.Errorf("put without displayName: %d", code)
+	for _, body := range []string{`{"displayName":"x"}`, `{"settings":{}}`} {
+		if r := e.send(t, acctReq{method: "PUT", path: "/api/account", cookie: cookie, body: body}); r.code != 400 {
+			t.Errorf("put %s: %d", body, r.code)
+		}
 	}
 }
 
-func TestProfileBadNames(t *testing.T) {
+func TestSignUpBadNames(t *testing.T) {
 	e := newEnv(t)
 	for name, u := range map[string]string{
 		"empty": "", "blank": "   ", "25 chars": strings.Repeat("a", 25), "control": "a\x07b", "newline": "a\nb",
 	} {
-		if code, body := e.do(t, "POST", "/api/profiles", ptok, pbody(u, map[string]any{})); code != 400 {
-			t.Errorf("%s: %d %s", name, code, body)
+		if r := e.signup(t, u, "hunter22"); r.code != 400 {
+			t.Errorf("%s: %d %s", name, r.code, r.body)
 		}
 	}
-	if code, _ := e.do(t, "POST", "/api/profiles", ptok, pbody(strings.Repeat("é", 24), map[string]any{})); code != 201 {
-		t.Errorf("24 code points should pass")
+	if r := e.signup(t, strings.Repeat("é", 24), "hunter22"); r.code != 201 {
+		t.Errorf("24 code points should pass: %d", r.code)
 	}
-	if code, _ := e.do(t, "POST", "/api/profiles", ptok, map[string]any{
-		"username": "ok", "displayName": " ", "settings": map[string]any{}}); code != 400 {
-		t.Errorf("blank displayName should fail")
-	}
-}
-
-func TestProfileMissing(t *testing.T) {
-	e := newEnv(t)
-	if code, _ := e.do(t, "PUT", "/api/profiles/none", ptok, map[string]any{"displayName": "x", "settings": map[string]any{}}); code != 404 {
-		t.Errorf("put missing: %d", code)
+	r := e.send(t, acctReq{method: "POST", path: "/api/auth/signup", body: map[string]any{
+		"username": "ok", "password": "hunter22", "displayName": " "}})
+	if r.code != 400 {
+		t.Errorf("blank displayName should fail: %d", r.code)
 	}
 }
 
@@ -179,16 +339,18 @@ func TestProfilePersistence(t *testing.T) {
 	if !s.Enabled() {
 		t.Fatal("store should be enabled")
 	}
-	if _, err := s.SignUp("Ada", "Ada", json.RawMessage(`{"a":1}`), "password1"); err != nil {
+	ada, err := s.SignUp("Ada", "Ada", json.RawMessage(`{"a":1}`), "password1")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.SignUp("Bob", "Bob", json.RawMessage(`{}`), "password1"); err != nil {
+	bob, err := s.SignUp("Bob", "Bob", json.RawMessage(`{}`), "password1")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.putByName("ada", "Ada L", json.RawMessage(`{"a":2}`)); err != nil {
+	if _, err := s.Put(ada.Token, "Ada L", json.RawMessage(`{"a":2}`)); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.deleteByName("bob"); err != nil {
+	if err := s.Delete(bob.Token, "password1"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.SignUp("Cy", "Cy", json.RawMessage(`{"c":[1]}`), "password1"); err != nil {
@@ -210,17 +372,18 @@ func TestProfilePersistence(t *testing.T) {
 func TestProfileSaveFailureRollsBack(t *testing.T) {
 	dir := t.TempDir()
 	s := openProfilesIter(dir, testHubNow, t.Logf, testPBKDF2Iter)
-	if _, err := s.SignUp("Ada", "Ada", json.RawMessage(`{}`), "password1"); err != nil {
+	ada, err := s.SignUp("Ada", "Ada", json.RawMessage(`{}`), "password1")
+	if err != nil {
 		t.Fatal(err)
 	}
 	s.dir = filepath.Join(dir, "gone") // temp file creation now fails
 	if _, err := s.SignUp("Bob", "Bob", json.RawMessage(`{}`), "password1"); err != errProfilesSave {
 		t.Fatalf("create: %v", err)
 	}
-	if _, err := s.putByName("Ada", "X", json.RawMessage(`{"x":1}`)); err != errProfilesSave {
+	if _, err := s.Put(ada.Token, "X", json.RawMessage(`{"x":1}`)); err != errProfilesSave {
 		t.Fatalf("put: %v", err)
 	}
-	if err := s.deleteByName("Ada"); err != errProfilesSave {
+	if err := s.Delete(ada.Token, "password1"); err != errProfilesSave {
 		t.Fatalf("delete: %v", err)
 	}
 	if len(s.m) != 1 || s.m["ada"].DisplayName != "Ada" {
@@ -247,20 +410,22 @@ func TestProfileCorruptFileDisables(t *testing.T) {
 				t.Fatal(err)
 			}
 			e.p = openProfilesIter(filepath.Dir(path), e.clk.Now, t.Logf, testPBKDF2Iter)
-			e.srv.Config.Handler = newHandler(e.h, e.p, e.dir)
+			e.srv.Config.Handler = newHandler(e.h, e.p, e.dir, testOpts)
 			if e.p.Enabled() {
 				t.Fatal("store should be disabled")
 			}
-			for _, req := range [][2]string{{"GET", "/api/profiles"}, {"GET", "/api/profiles/a"}, {"POST", "/api/profiles"}, {"PUT", "/api/profiles/a"}, {"DELETE", "/api/profiles/a"}} {
-				body := any(nil)
-				if req[0] == "POST" {
-					body = pbody("new", map[string]any{})
-				} else if req[0] == "PUT" {
-					body = map[string]any{"displayName": "x", "settings": map[string]any{}}
-				}
-				code, out := e.do(t, req[0], req[1], ptok, body)
-				if code != 503 || !strings.Contains(out, "profiles are unavailable") {
-					t.Errorf("%v: %d %s", req, code, out)
+			cred := map[string]any{"username": "a", "password": "hunter22"}
+			for _, req := range []acctReq{
+				{method: "POST", path: "/api/auth/signup", body: cred},
+				{method: "POST", path: "/api/auth/login", body: cred},
+				{method: "POST", path: "/api/auth/logout"},
+				{method: "GET", path: "/api/account"},
+				{method: "PUT", path: "/api/account", body: map[string]any{"displayName": "x", "settings": map[string]any{}}},
+				{method: "DELETE", path: "/api/account", body: map[string]any{"password": "hunter22"}},
+			} {
+				r := e.send(t, req)
+				if r.code != 503 || !strings.Contains(r.body, "profiles are unavailable") {
+					t.Errorf("%s %s: %d %s", req.method, req.path, r.code, r.body)
 				}
 			}
 			after, _ := os.ReadFile(path)
@@ -284,11 +449,9 @@ func TestProfilesUnusableDirDisables(t *testing.T) {
 	}
 }
 
-func TestProfilesConcurrentPut(t *testing.T) {
+func TestAccountConcurrentPut(t *testing.T) {
 	e := newEnv(t)
-	if code, _ := e.do(t, "POST", "/api/profiles", ptok, pbody("ada", map[string]any{})); code != 201 {
-		t.Fatal(code)
-	}
+	cookie := cookiePair(e.signup(t, "ada", "hunter22").setCookie)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	seen := map[int64]bool{}
@@ -297,14 +460,14 @@ func TestProfilesConcurrentPut(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			// The shared rate limit is per token, so each goroutine has its own.
-			code, body := e.do(t, "PUT", "/api/profiles/ada", tok(1000+i), map[string]any{
-				"displayName": fmt.Sprintf("n%d", i), "settings": map[string]any{"i": i}})
-			if code != 200 {
-				t.Errorf("put %d: %d %s", i, code, body)
+			r := e.send(t, acctReq{method: "PUT", path: "/api/account", token: tok(1000 + i), cookie: cookie, body: map[string]any{
+				"displayName": fmt.Sprintf("n%d", i), "settings": map[string]any{"i": i}}})
+			if r.code != 200 {
+				t.Errorf("put %d: %d %s", i, r.code, r.body)
 				return
 			}
 			var up struct{ UpdatedAt int64 }
-			_ = json.Unmarshal([]byte(body), &up)
+			_ = json.Unmarshal([]byte(r.body), &up)
 			mu.Lock()
 			if seen[up.UpdatedAt] {
 				t.Errorf("duplicate updatedAt %d", up.UpdatedAt)

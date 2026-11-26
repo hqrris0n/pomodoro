@@ -28,7 +28,6 @@ const (
 )
 
 var (
-	errNoProfile      = &apiError{404, "no such profile"}
 	errProfileTaken   = &apiError{409, "That username is taken."}
 	errProfilesFull   = &apiError{429, "Too many accounts"}
 	errProfilesOff    = &apiError{503, "profiles are unavailable"}
@@ -43,11 +42,6 @@ type Profile struct {
 	DisplayName string          `json:"displayName"`
 	Settings    json.RawMessage `json:"settings"`
 	UpdatedAt   int64           `json:"updatedAt"`
-}
-
-type profileSummary struct {
-	Username    string `json:"username"`
-	DisplayName string `json:"displayName"`
 }
 
 type profilesDisk struct {
@@ -267,64 +261,11 @@ func (s *profileStore) save() error {
 	return err
 }
 
-func (s *profileStore) List() []profileSummary {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := make([]profileSummary, 0, len(s.m))
-	for _, a := range s.m {
-		out = append(out, profileSummary{a.Username, a.DisplayName})
-	}
-	sort.Slice(out, func(i, j int) bool { return profileKey(out[i].Username) < profileKey(out[j].Username) })
-	return out
-}
+// HTTP handlers. They run inside commandLimit, so the per-browser token is
+// already checked and rate limited; the account itself is identified by the
+// session cookie.
 
-func (s *profileStore) Get(username string) (Profile, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	a, ok := s.m[profileKey(username)]
-	if !ok {
-		return Profile{}, errNoProfile
-	}
-	return a.Profile, nil
-}
-
-// putByName and deleteByName serve only the pre-account HTTP handlers below,
-// which have no sessions; they go away when those handlers are replaced.
-func (s *profileStore) putByName(username, displayName string, settings json.RawMessage) (int64, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	k := profileKey(username)
-	old, ok := s.m[k]
-	if !ok {
-		return 0, errNoProfile
-	}
-	a := updatedLocked(old, displayName, settings, s.now())
-	s.setLocked(k, a)
-	if err := s.save(); err != nil {
-		s.setLocked(k, old)
-		return 0, errProfilesSave
-	}
-	return a.UpdatedAt, nil
-}
-
-func (s *profileStore) deleteByName(username string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	k := profileKey(username)
-	old, ok := s.m[k]
-	if !ok {
-		return errNoProfile
-	}
-	s.deleteLocked(k)
-	if err := s.save(); err != nil {
-		s.setLocked(k, old)
-		return errProfilesSave
-	}
-	return nil
-}
-
-// HTTP handlers. They run inside commandLimit, so the token is already checked
-// and rate limited.
+const sessionCookieName = "cafe_session"
 
 func (a *api) profilesOn() error {
 	if !a.p.Enabled() {
@@ -333,32 +274,44 @@ func (a *api) profilesOn() error {
 	return nil
 }
 
-func (a *api) listProfiles(w http.ResponseWriter, _ *http.Request, _ string) error {
-	if err := a.profilesOn(); err != nil {
-		return err
-	}
-	writeJSON(w, 200, map[string]any{"profiles": a.p.List()})
-	return nil
+// setSession sends the session cookie, which also renews it in the browser.
+// A negative maxAge clears it.
+func setSession(w http.ResponseWriter, token string, maxAge int) {
+	http.SetCookie(w, &http.Cookie{
+		Name: sessionCookieName, Value: token, Path: "/api", MaxAge: maxAge,
+		HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode,
+	})
 }
 
-func (a *api) getProfile(w http.ResponseWriter, r *http.Request, _ string) error {
-	if err := a.profilesOn(); err != nil {
-		return err
-	}
-	p, err := a.p.Get(r.PathValue("username"))
+func startSession(w http.ResponseWriter, token string) {
+	setSession(w, token, int(sessionTTL/time.Second))
+}
+
+func clearSession(w http.ResponseWriter) { setSession(w, "", -1) }
+
+// sessionToken is the account session token from the cookie, or "".
+func sessionToken(r *http.Request) string {
+	c, err := r.Cookie(sessionCookieName)
 	if err != nil {
-		return err
+		return ""
 	}
-	writeJSON(w, 200, p)
-	return nil
+	return c.Value
 }
 
-func (a *api) createProfile(w http.ResponseWriter, r *http.Request, _ string) error {
+type credentials struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+func (a *api) signup(w http.ResponseWriter, r *http.Request, _ string) error {
 	if err := a.profilesOn(); err != nil {
+		return err
+	}
+	if err := a.lim.attemptIP(clientIP(r, a.trustProxy)); err != nil {
 		return err
 	}
 	var in struct {
-		Username    string          `json:"username"`
+		credentials
 		DisplayName *string         `json:"displayName"`
 		Settings    json.RawMessage `json:"settings"`
 	}
@@ -375,21 +328,77 @@ func (a *api) createProfile(w http.ResponseWriter, r *http.Request, _ string) er
 			return err
 		}
 	}
+	if len(in.Settings) == 0 {
+		in.Settings = json.RawMessage(`{}`)
+	}
 	settings, err := validateProfileSettings(in.Settings)
 	if err != nil {
 		return err
 	}
-	// This pre-account endpoint takes no password, so it uses the migration
-	// default until the handler is replaced.
-	g, err := a.p.SignUp(username, display, settings, migratedPassword)
+	g, err := a.p.SignUp(username, display, settings, in.Password)
 	if err != nil {
 		return err
 	}
+	// task C: hub handover (link the device token to g.Profile.Username and g.Gen)
+	startSession(w, g.Token)
 	writeJSON(w, 201, g.Profile)
 	return nil
 }
 
-func (a *api) putProfile(w http.ResponseWriter, r *http.Request, _ string) error {
+func (a *api) login(w http.ResponseWriter, r *http.Request, _ string) error {
+	if err := a.profilesOn(); err != nil {
+		return err
+	}
+	if err := a.lim.attemptIP(clientIP(r, a.trustProxy)); err != nil {
+		return err
+	}
+	var in credentials
+	if err := decode(r, &in); err != nil {
+		return err
+	}
+	if err := a.lim.blockedUser(in.Username); err != nil {
+		return err
+	}
+	g, err := a.p.Login(in.Username, in.Password)
+	if err != nil {
+		if err == error(errBadLogin) {
+			a.lim.failUser(in.Username)
+		}
+		return err
+	}
+	// task C: hub handover (link the device token to g.Profile.Username and g.Gen)
+	startSession(w, g.Token)
+	writeJSON(w, 200, g.Profile)
+	return nil
+}
+
+func (a *api) logout(w http.ResponseWriter, r *http.Request, _ string) error {
+	if err := a.profilesOn(); err != nil {
+		return err
+	}
+	if err := a.p.Logout(sessionToken(r)); err != nil {
+		return err
+	}
+	clearSession(w)
+	writeJSON(w, 200, struct{}{})
+	return nil
+}
+
+func (a *api) getAccount(w http.ResponseWriter, r *http.Request, _ string) error {
+	if err := a.profilesOn(); err != nil {
+		return err
+	}
+	token := sessionToken(r)
+	p, _, err := a.p.Lookup(token)
+	if err != nil {
+		return err
+	}
+	startSession(w, token)
+	writeJSON(w, 200, p)
+	return nil
+}
+
+func (a *api) putAccount(w http.ResponseWriter, r *http.Request, _ string) error {
 	if err := a.profilesOn(); err != nil {
 		return err
 	}
@@ -411,21 +420,41 @@ func (a *api) putProfile(w http.ResponseWriter, r *http.Request, _ string) error
 	if err != nil {
 		return err
 	}
-	at, err := a.p.putByName(r.PathValue("username"), display, settings)
+	token := sessionToken(r)
+	at, err := a.p.Put(token, display, settings)
 	if err != nil {
 		return err
 	}
+	startSession(w, token)
 	writeJSON(w, 200, map[string]int64{"updatedAt": at})
 	return nil
 }
 
-func (a *api) deleteProfile(w http.ResponseWriter, r *http.Request, _ string) error {
+func (a *api) deleteAccount(w http.ResponseWriter, r *http.Request, _ string) error {
 	if err := a.profilesOn(); err != nil {
 		return err
 	}
-	if err := a.p.deleteByName(r.PathValue("username")); err != nil {
+	token := sessionToken(r)
+	p, _, err := a.p.Lookup(token)
+	if err != nil {
 		return err
 	}
+	var in struct {
+		Password string `json:"password"`
+	}
+	if err := decode(r, &in); err != nil {
+		return err
+	}
+	if err := a.lim.blockedUser(p.Username); err != nil {
+		return err
+	}
+	if err := a.p.Delete(token, in.Password); err != nil {
+		if err == error(errWrongPassword) {
+			a.lim.failUser(p.Username)
+		}
+		return err
+	}
+	clearSession(w)
 	writeJSON(w, 200, struct{}{})
 	return nil
 }

@@ -60,7 +60,7 @@ func newRaceServer(t *testing.T) (*httptest.Server, *profileStore, *hub) {
 	}
 	h, clk := newTestHub()
 	ps := openProfilesIter(filepath.Join(t.TempDir(), "data"), clk.Now, t.Logf, testPBKDF2Iter)
-	srv := httptest.NewServer(newHandler(h, ps, static))
+	srv := httptest.NewServer(newHandler(h, ps, static, testOpts))
 	t.Cleanup(srv.Close)
 	t.Cleanup(h.CloseStreams)
 	return srv, ps, h

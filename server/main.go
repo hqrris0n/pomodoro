@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -20,10 +21,16 @@ func envOr(key, fallback string) string {
 	return fallback
 }
 
+// envBool is true when the variable is "1" or "true" (any case).
+func envBool(key string) bool {
+	v := strings.ToLower(os.Getenv(key))
+	return v == "1" || v == "true"
+}
+
 // newHandler combines the API and the static site on one mux.
-func newHandler(h *hub, p *profileStore, staticDir string) http.Handler {
+func newHandler(h *hub, p *profileStore, staticDir string, o apiOptions) http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle("/api/", newAPI(h, p))
+	mux.Handle("/api/", newAPI(h, p, o))
 	mux.Handle("/", staticHandler(os.DirFS(staticDir)))
 	return mux
 }
@@ -32,6 +39,7 @@ func main() {
 	port := flag.String("port", envOr("PORT", "8080"), "listen port (env PORT)")
 	static := flag.String("static", envOr("STATIC_DIR", "./public"), "static files directory (env STATIC_DIR)")
 	data := flag.String("data", envOr("DATA_DIR", "./data"), "data directory for profiles.json (env DATA_DIR)")
+	trust := flag.Bool("trust-proxy", envBool("TRUST_PROXY"), "read the client address from the rightmost X-Forwarded-For entry; only behind a proxy that sets it (env TRUST_PROXY)")
 	flag.Parse()
 
 	h := newHub(time.Now, log.Printf)
@@ -43,7 +51,7 @@ func main() {
 	// WriteTimeout because it would cut off long-lived SSE streams.
 	srv := &http.Server{
 		Addr:              ":" + *port,
-		Handler:           newHandler(h, profiles, *static),
+		Handler:           newHandler(h, profiles, *static, apiOptions{trustProxy: *trust}),
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       2 * time.Minute,
 	}
