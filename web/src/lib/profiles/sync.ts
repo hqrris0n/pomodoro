@@ -11,6 +11,8 @@ import { load, onSave, readSynced, saveQuiet, SYNCED_KEYS, writeSynced } from '.
 import { ProfileError, realApi, type Profile, type ProfilesApi } from './api';
 
 export const MAX_USERNAME = 24;
+export const MIN_PASSWORD = 8;
+export const MAX_PASSWORD = 72;
 export const DEBOUNCE_MS = 1000;
 export const BOOT_TIMEOUT_MS = 1500;
 const MAX_SETTINGS_BYTES = 256 * 1024;
@@ -25,6 +27,7 @@ const K_PENDING = 'profilePending'; // switched user, but their profile is not a
 const K_USED = 'profileUsed'; // a profile has been used on this device before
 
 const UNREACHABLE = "Can't reach the café right now.";
+const ELSEWHERE = 'You were logged in somewhere else.';
 const SYNCED = new Set<string>(SYNCED_KEYS);
 
 export type SyncStatus = 'off' | 'saved' | 'saving' | 'offline' | 'waiting' | 'too-big';
@@ -53,15 +56,21 @@ function validToken(v: unknown): v is string {
   return typeof v === 'string' && /^[0-9a-f]{32}$/.test(v);
 }
 
+/** Password text for the account card, or null when it is acceptable. */
+export function passwordError(password: string): string | null {
+  const n = [...password].length;
+  if (n < MIN_PASSWORD) return `Password must be at least ${MIN_PASSWORD} characters.`;
+  if (n > MAX_PASSWORD) return `Password must be at most ${MAX_PASSWORD} characters.`;
+  return null;
+}
+
+/** The server's messages for these statuses are user copy already. */
 function errorText(e: unknown): string {
   if (!(e instanceof ProfileError)) return UNREACHABLE;
-  if (e.status === 409) return 'That username was just taken. Press Enter again to use it.';
-  if (e.status === 429 && /profiles/.test(e.message)) {
-    return 'The café is full. Delete an old user in Settings first.';
+  if ([400, 401, 409, 429].includes(e.status)) {
+    return e.message.charAt(0).toUpperCase() + e.message.slice(1);
   }
-  if (e.status === 429) return 'Too many requests. Wait a moment and try again.';
-  if (e.status === 503) return 'Users are unavailable on this server right now.';
-  if (e.status === 400) return e.message.charAt(0).toUpperCase() + e.message.slice(1) + '.';
+  if (e.status === 503) return 'Accounts are unavailable on this server right now.';
   return UNREACHABLE;
 }
 
@@ -74,7 +83,7 @@ type OwnSettings = {
 
 export class ProfileSync {
   status: SyncStatus = 'off';
-  /** Something the user should know, e.g. their user was deleted elsewhere. */
+  /** Something the user should know, e.g. they were logged in somewhere else. */
   notice: string | null = null;
 
   #d: SyncDeps;
@@ -145,7 +154,7 @@ export class ProfileSync {
     if (!user || !token) return;
     let p: Profile;
     try {
-      p = await this.#d.api.get(token, user, timeoutMs);
+      p = await this.#d.api.get(token, timeoutMs);
     } catch (e) {
       this.#failed(e);
       return;
@@ -264,7 +273,7 @@ export class ProfileSync {
     this.#setStatus('saving');
     this.#inflight = (async () => {
       try {
-        const { updatedAt } = await this.#d.api.put(token, user, body);
+        const { updatedAt } = await this.#d.api.put(token, body);
         if (this.current !== user) return;
         saveQuiet(K_SYNCED_AT, updatedAt);
         if (seq === this.#seq) saveQuiet(K_DIRTY, null);
@@ -291,7 +300,7 @@ export class ProfileSync {
     if (!user || !token || this.pending) return;
     if (this.dirty) return this.flush();
     try {
-      const p = await this.#d.api.get(token, user);
+      const p = await this.#d.api.get(token);
       if (this.current !== user || this.dirty) return;
       const syncedAt = load<unknown>(K_SYNCED_AT, 0);
       if (typeof syncedAt !== 'number' || p.updatedAt > syncedAt) this.#apply(p, true);
@@ -361,7 +370,7 @@ export class ProfileSync {
     if (!p || !user || !sameName(p.username, user)) {
       if (!user || !token) return;
       try {
-        p = await this.#d.api.get(token, user);
+        p = await this.#d.api.get(token);
       } catch (e) {
         this.#failed(e); // stays pending; the next load tries again
         return;
@@ -371,10 +380,8 @@ export class ProfileSync {
   }
 
   #failed(e: unknown) {
-    if (e instanceof ProfileError && e.status === 404) {
-      this.#forget();
-      this.notice = 'That user was deleted. This device keeps its settings.';
-      this.#emit();
+    if (e instanceof ProfileError && e.status === 401) {
+      this.revoked();
       return;
     }
     this.#setStatus('offline');
@@ -392,43 +399,63 @@ export class ProfileSync {
     this.#emit();
   }
 
+  /**
+   * The session is gone (logged in elsewhere): drop to logged out, keep the
+   * local settings and say why.
+   */
+  revoked() {
+    if (!this.current) return; // already logged out here (e.g. a logout that never reached the server)
+    this.#forget();
+    this.notice = ELSEWHERE;
+    this.#emit();
+  }
+
   // ---- user actions ---------------------------------------------------
 
-  /**
-   * Sign in as `raw`: an existing user (ignoring case) replaces this device's
-   * settings with theirs; a new name creates the user. The first user used on
-   * this device starts with its current settings, later ones start fresh.
-   * May reload the page (not while a timer exists).
-   */
-  async signIn(raw: string): Promise<SignInResult> {
-    const invalid = usernameError(raw);
-    if (invalid) return { ok: false, error: invalid };
-    const name = raw.trim();
-    const current = this.current;
-    if (current && sameName(current, name)) return { ok: true, deferred: false, displayName: null };
+  /** Checks shared by logIn and signUp; returns the device token or an error. */
+  #precheck(username: string, password: string): { token: string } | { error: string } {
+    const error = usernameError(username) ?? passwordError(password);
+    if (error) return { error };
     const token = this.#token();
-    if (!token) return { ok: false, error: UNREACHABLE };
-    this.notice = null;
+    return token ? { token } : { error: UNREACHABLE };
+  }
+
+  /**
+   * Log in: the account's settings replace this device's. May reload the page
+   * (not while a timer exists).
+   */
+  async logIn(username: string, password: string): Promise<SignInResult> {
+    const pre = this.#precheck(username, password);
+    if ('error' in pre) return { ok: false, error: pre.error };
     await this.flush(); // the previous user's unsent changes go to them first
-
-    let existing: Profile | null = null;
+    this.notice = null;
+    let p: Profile;
     try {
-      existing = await this.#d.api.get(token, name);
+      p = await this.#d.api.login(pre.token, { username: username.trim(), password });
     } catch (e) {
-      if (!(e instanceof ProfileError && e.status === 404))
-        return { ok: false, error: errorText(e) };
+      return { ok: false, error: errorText(e) };
     }
-    if (existing) {
-      saveQuiet(K_USED, true);
-      const deferred = this.#apply(existing, true);
-      return { ok: true, deferred, displayName: existing.displayName };
-    }
+    saveQuiet(K_USED, true);
+    const deferred = this.#apply(p, true);
+    return { ok: true, deferred, displayName: p.displayName };
+  }
 
+  /**
+   * Create an account and log in. The first account used on this device starts
+   * with its current settings; later ones start fresh (and reload).
+   */
+  async signUp(username: string, password: string): Promise<SignInResult> {
+    const pre = this.#precheck(username, password);
+    if ('error' in pre) return { ok: false, error: pre.error };
+    const name = username.trim();
+    await this.flush();
+    this.notice = null;
     const seed = load<unknown>(K_USED, false) !== true;
     let created: Profile;
     try {
-      created = await this.#d.api.create(token, {
+      created = await this.#d.api.signup(pre.token, {
         username: name,
+        password,
         displayName: name,
         settings: seed ? this.#payload() : {},
       });
@@ -437,7 +464,7 @@ export class ProfileSync {
     }
     saveQuiet(K_USED, true);
     if (seed) {
-      // This device's settings are the profile's already: no reload needed.
+      // This device's settings are the account's already: no reload needed.
       saveQuiet(K_CURRENT, created.username);
       saveQuiet(K_SYNCED_AT, created.updatedAt);
       saveQuiet(K_DIRTY, null);
@@ -450,23 +477,36 @@ export class ProfileSync {
     return { ok: true, deferred, displayName: created.displayName };
   }
 
-  /** Stop syncing on this device; local settings stay as they are. */
-  signOut(): void {
+  /** Log out. Local settings stay; the server is told on a best-effort basis. */
+  async logOut(): Promise<void> {
+    const token = this.#token();
+    if (token && this.current) {
+      await this.flush(); // unsent changes go to the account while the session lives
+      try {
+        await this.#d.api.logout(token);
+      } catch {
+        // unreachable: the server's session lapses on its own
+      }
+    }
     this.notice = null;
     this.#forget();
   }
 
-  /** Delete a user on the server. Deleting the signed-in user signs this device out. */
-  async remove(username: string): Promise<string | null> {
+  /** Delete the logged-in account. Returns an error message, or null (logged out). */
+  async deleteAccount(password: string): Promise<string | null> {
     const token = this.#token();
     if (!token) return UNREACHABLE;
     try {
-      await this.#d.api.remove(token, username);
+      await this.#d.api.remove(token, password);
     } catch (e) {
-      if (!(e instanceof ProfileError && e.status === 404)) return errorText(e);
+      if (e instanceof ProfileError && e.status === 401 && /signed in/i.test(e.message)) {
+        this.revoked();
+        return ELSEWHERE;
+      }
+      return errorText(e);
     }
-    const current = this.current;
-    if (current && sameName(current, username)) this.signOut();
+    this.notice = null;
+    this.#forget();
     return null;
   }
 }

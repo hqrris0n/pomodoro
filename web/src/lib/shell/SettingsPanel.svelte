@@ -32,20 +32,9 @@
   let nameInput: HTMLInputElement | undefined = $state();
   let nameDraft = $state(identity.name);
   let nameError = $state(false);
-  const NEW_USER = '\u0000new';
-  let adding = $state(false);
-  let newUserInput: HTMLInputElement | undefined = $state();
-  let newUserDraft = $state('');
-  let userError = $state<string | null>(null);
   let confirmingDelete = $state(false);
   let deleteError = $state<string | null>(null);
-
-  // Saved users, with the signed-in one even when the list could not be fetched.
-  const userOptions = $derived.by(() => {
-    const names = profiles.users.map((u) => u.username);
-    if (profiles.current && !names.includes(profiles.current)) names.unshift(profiles.current);
-    return names;
-  });
+  let deletePassword = $state('');
   let previous: HTMLElement | null = null;
   let wasOpen = false;
 
@@ -56,11 +45,9 @@
       previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
       nameDraft = identity.name;
       nameError = false;
-      adding = false;
-      userError = null;
       confirmingDelete = false;
       deleteError = null;
-      void profiles.refreshUsers();
+      deletePassword = '';
       void tick().then(() => closeButton?.focus());
     } else {
       previous?.focus();
@@ -84,51 +71,16 @@
     nameError = false;
   }
 
-  async function onUserChange(e: Event & { currentTarget: HTMLSelectElement }) {
-    const select = e.currentTarget;
-    const value = select.value;
-    userError = null;
-    confirmingDelete = false;
-    if (value === NEW_USER) {
-      adding = true;
-      newUserDraft = '';
-      await tick();
-      newUserInput?.focus();
-      return;
-    }
-    adding = false;
-    if (value) userError = await profiles.signIn(value);
-    // A failed or no-op choice puts the dropdown back on the signed-in user.
-    select.value = profiles.current ?? '';
-  }
-
-  async function addUser() {
-    const value = newUserDraft.trim();
-    if (!value) {
-      adding = false;
-      return;
-    }
-    userError = await profiles.signIn(value);
-    if (!userError) adding = false;
-  }
-
-  function onNewUserKey(e: KeyboardEvent) {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      void addUser();
-    } else if (e.key === 'Escape') {
-      e.preventDefault();
-      e.stopPropagation();
-      adding = false;
-      userError = null;
-    }
+  async function logOut() {
+    await profiles.logOut();
   }
 
   async function deleteUser() {
-    const user = profiles.current;
-    if (!user) return;
-    deleteError = await profiles.remove(user);
-    if (!deleteError) confirmingDelete = false;
+    deleteError = await profiles.deleteAccount(deletePassword);
+    if (!deleteError) {
+      confirmingDelete = false;
+      deletePassword = '';
+    }
   }
 
   function onNameKey(e: KeyboardEvent) {
@@ -234,43 +186,12 @@
 
     <section aria-labelledby="you-heading">
       <h3 id="you-heading">You</h3>
-      <label class="field">
-        <span>User</span>
-        <span class="sub">Your settings and to-dos follow you to any device.</span>
-        <select
-          value={adding ? NEW_USER : (profiles.current ?? '')}
-          disabled={!profiles.reachable || profiles.busy}
-          aria-describedby={userError ? 'user-error' : undefined}
-          onchange={onUserChange}
-        >
-          {#if !profiles.current}<option value="">This device only</option>{/if}
-          {#each userOptions as name (name)}
-            <option value={name}>{name}</option>
-          {/each}
-          <option value={NEW_USER}>Add new user</option>
-        </select>
-      </label>
-      {#if !profiles.reachable}
-        <p class="note">Can't reach the café right now.</p>
+      {#if profiles.current}
+        <p class="sub">Logged in as {profiles.current}.</p>
+        <button type="button" class="btn" disabled={profiles.busy} onclick={logOut}>Log out</button>
+      {:else}
+        <p class="sub">Settings stay on this device. Log in from the order card to sync them.</p>
       {/if}
-      {#if adding}
-        <label class="field">
-          <span>New username</span>
-          <span class="sub">Press Enter to add it. It can't be changed later.</span>
-          <input
-            bind:this={newUserInput}
-            bind:value={newUserDraft}
-            type="text"
-            maxlength="24"
-            autocomplete="off"
-            autocapitalize="off"
-            spellcheck="false"
-            disabled={profiles.busy}
-            onkeydown={onNewUserKey}
-          />
-        </label>
-      {/if}
-      {#if userError}<p id="user-error" class="error" role="alert">{userError}</p>{/if}
       {#if profiles.status === 'waiting'}
         <p class="note">Your settings switch over when this timer ends.</p>
       {:else if profiles.current && profiles.status === 'offline'}
@@ -332,9 +253,15 @@
     <section class="danger" aria-label="Delete user">
       {#if confirmingDelete && profiles.current}
         <p role="alert">
-          Delete {profiles.displayNameOf(profiles.current)}? Their settings are removed on every
-          device.
+          Delete {profiles.current}? Its settings are removed on every device. Enter your password
+          to confirm.
         </p>
+        <input
+          bind:value={deletePassword}
+          type="password"
+          aria-label="Password"
+          autocomplete="current-password"
+        />
         <div class="confirm">
           <button type="button" class="btn" onclick={() => (confirmingDelete = false)}>
             Cancel

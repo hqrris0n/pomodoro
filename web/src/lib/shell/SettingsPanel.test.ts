@@ -26,53 +26,6 @@ describe('SettingsPanel', () => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
     profiles.current = null;
-    profiles.reachable = true;
-    profiles.users = [];
-  });
-
-  function withUsers(...names: string[]) {
-    return vi.spyOn(profiles, 'refreshUsers').mockImplementation(async () => {
-      profiles.users = names.map((n) => ({ username: n, displayName: `${n} L` }));
-      profiles.reachable = true;
-    });
-  }
-
-  it('lists saved users plus "Add new user" and signs in on choice', async () => {
-    withUsers('Ada', 'Bea');
-    const signIn = vi.spyOn(profiles, 'signIn').mockResolvedValue(null);
-    render(SettingsPanel, { open: true });
-    await tick();
-    const select = screen.getByLabelText(/^User/) as HTMLSelectElement;
-    const options = Array.from(select.options).map((o) => o.textContent);
-    expect(options).toEqual(['This device only', 'Ada', 'Bea', 'Add new user']);
-    await fireEvent.change(select, { target: { value: 'Bea' } });
-    expect(signIn).toHaveBeenCalledWith('Bea');
-  });
-
-  it('adds a new user from the inline field', async () => {
-    withUsers('Ada');
-    const signIn = vi.spyOn(profiles, 'signIn').mockResolvedValue(null);
-    render(SettingsPanel, { open: true });
-    await tick();
-    const select = screen.getByLabelText(/^User/) as HTMLSelectElement;
-    await fireEvent.change(select, { target: { value: select.options[2].value } });
-    await tick();
-    const input = screen.getByLabelText(/New username/);
-    expect(input).toHaveFocus();
-    await fireEvent.input(input, { target: { value: 'Cat' } });
-    await fireEvent.keyDown(input, { key: 'Enter' });
-    expect(signIn).toHaveBeenCalledWith('Cat');
-  });
-
-  it("disables the dropdown when the café can't be reached", async () => {
-    vi.spyOn(profiles, 'refreshUsers').mockImplementation(async () => {
-      profiles.reachable = false;
-    });
-    render(SettingsPanel, { open: true });
-    await tick();
-    expect(screen.getByLabelText(/^User/)).toBeDisabled();
-    expect(screen.getByText("Can't reach the café right now.")).toBeInTheDocument();
-    expect(screen.getByLabelText(/Display name/)).toBeEnabled();
   });
 
   it('rolls a random display name with the dice', async () => {
@@ -82,31 +35,22 @@ describe('SettingsPanel', () => {
     expect((screen.getByLabelText(/Display name/) as HTMLInputElement).value).toBe(identity.name);
   });
 
-  it('deletes the selected user after confirming', async () => {
-    withUsers('Ada');
-    const remove = vi.spyOn(profiles, 'remove').mockResolvedValue(null);
-    identity.setName('Ada Lovelace');
+  it('deletes the account after confirming with the password', async () => {
+    const remove = vi.spyOn(profiles, 'deleteAccount').mockResolvedValue(null);
     profiles.current = 'Ada';
     render(SettingsPanel, { open: true });
-    await tick();
-    expect((screen.getByLabelText(/^User/) as HTMLSelectElement).value).toBe('Ada');
-
     await fireEvent.click(screen.getByRole('button', { name: 'Delete user' }));
-    expect(
-      screen.getByText('Delete Ada Lovelace? Their settings are removed on every device.'),
-    ).toBeInTheDocument();
     await fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     expect(remove).not.toHaveBeenCalled();
 
     await fireEvent.click(screen.getByRole('button', { name: 'Delete user' }));
+    await fireEvent.input(screen.getByLabelText('Password'), { target: { value: 'hunter22' } });
     await fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
-    expect(remove).toHaveBeenCalledWith('Ada');
+    expect(remove).toHaveBeenCalledWith('hunter22');
   });
 
-  it('cannot delete when no user is selected', async () => {
-    withUsers('Ada');
+  it('cannot delete when logged out', async () => {
     render(SettingsPanel, { open: true });
-    await tick();
     expect(screen.getByRole('button', { name: 'Delete user' })).toBeDisabled();
   });
 

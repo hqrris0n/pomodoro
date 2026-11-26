@@ -3,6 +3,7 @@ import { backgrounds } from '../backgrounds/backgrounds.svelte';
 import { drinks } from '../drinks/drinks.svelte';
 import { sound } from '../audio/mixes.svelte';
 import { notes, type Note } from '../notes/notes.svelte';
+import { profileSync } from '../profiles/sync';
 import { identity } from '../shell/identity.svelte';
 import { load, save } from '../storage';
 import { timer } from '../timer/engine.svelte';
@@ -59,6 +60,8 @@ export type RoomsDeps = {
   api: RoomsApi;
   /** Called with each valid sticky note that arrives. */
   onNote?: (note: Note) => void;
+  /** Called when the server ends this device's login because it was used elsewhere. */
+  onSessionRevoked?: () => void;
   createEventSource?: (url: string) => EventSource;
   now?: () => number;
 };
@@ -245,6 +248,9 @@ export class RoomsStore {
       this.#all = data.rooms as ListedRoom[];
     });
     es.addEventListener('note', (e) => this.#onNote(e));
+    es.addEventListener('session', (e) => {
+      if (parse(e)?.state === 'revoked') this.#d.onSessionRevoked?.();
+    });
     es.addEventListener('room', (e) => {
       const data = parse(e);
       if (!data) return;
@@ -666,4 +672,5 @@ export const rooms = new RoomsStore({
   sound,
   api: realApi,
   onNote: (n) => notes.add(n),
+  onSessionRevoked: () => profileSync.revoked(),
 });

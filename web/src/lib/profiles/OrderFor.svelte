@@ -5,6 +5,7 @@
   let userInput: HTMLInputElement | undefined = $state();
   let nameInput: HTMLInputElement | undefined = $state();
   let userDraft = $state(profiles.current ?? '');
+  let passwordDraft = $state('');
   let nameDraft = $state(identity.name);
   let userError = $state<string | null>(null);
   let nameError = $state(false);
@@ -19,17 +20,19 @@
     if (document.activeElement !== nameInput) nameDraft = name;
   });
 
-  async function commitUser() {
-    if (profiles.busy) return;
+  async function logIn() {
+    if (profiles.busy || profiles.current) return;
     const value = userDraft.trim();
-    const current = profiles.current;
-    if (!value || (current && value.toLowerCase() === current.toLowerCase())) {
-      userDraft = current ?? '';
-      userError = null;
-      return;
+    if (!value || !passwordDraft) return;
+    userError = await profiles.logIn(value, passwordDraft);
+    if (!userError) passwordDraft = '';
+  }
+
+  function loginOnEnter(e: KeyboardEvent) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      void logIn();
     }
-    userError = await profiles.signIn(value);
-    if (!userError) userDraft = profiles.current ?? '';
   }
 
   function commitName() {
@@ -75,9 +78,20 @@
       disabled={profiles.busy}
       aria-invalid={userError !== null}
       aria-describedby={userError ? 'order-for-user-error' : undefined}
-      onblur={commitUser}
-      onkeydown={blurOnEnter}
+      readonly={profiles.current !== null}
+      onkeydown={loginOnEnter}
     />
+    {#if !profiles.current}
+      <input
+        bind:value={passwordDraft}
+        type="password"
+        placeholder="password"
+        aria-label="Password"
+        autocomplete="current-password"
+        disabled={profiles.busy}
+        onkeydown={loginOnEnter}
+      />
+    {/if}
     {#if userError}
       <p id="order-for-user-error" class="error" role="alert">{userError}</p>
     {:else if profiles.notice}

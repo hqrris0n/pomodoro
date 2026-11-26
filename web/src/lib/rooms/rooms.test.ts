@@ -60,6 +60,7 @@ const mkRoom = (over: Partial<Room> = {}): Room => ({
 
 function setup() {
   const onNote = vi.fn();
+  const onSessionRevoked = vi.fn();
   const api = {
     createRoom: vi.fn(async () => mkRoom()),
     joinRoom: vi.fn(async () =>
@@ -97,6 +98,7 @@ function setup() {
     sound,
     api: api as unknown as RoomsApi,
     onNote,
+    onSessionRevoked,
     createEventSource: (url) => {
       const s = new FakeSource(url);
       sources.push(s);
@@ -125,6 +127,7 @@ function setup() {
   };
   return {
     onNote,
+    onSessionRevoked,
     api,
     identity,
     timer,
@@ -486,6 +489,67 @@ describe('the stream', () => {
     h.api.joinRoom.mockRejectedValueOnce(new TypeError('Failed to fetch'));
     await h.rooms.join('x');
     expect(h.rooms.error).not.toContain(h.identity.token);
+  });
+});
+
+describe('the session event', () => {
+  it('tells the app when this device was logged out by a login elsewhere', async () => {
+    await h.connect();
+    h.es().emit('session', { now: Date.now(), state: 'revoked' });
+    expect(h.onSessionRevoked).toHaveBeenCalledTimes(1);
+  });
+
+  it('ignores other states and junk', async () => {
+    await h.connect();
+    h.es().emit('session', { now: Date.now(), state: 'ok' });
+    h.es().emit('session', 'junk');
+    expect(h.onSessionRevoked).not.toHaveBeenCalled();
+  });
+});
+
+describe('handover after a login moves me into the account room', () => {
+  const ACCOUNT_ROOM = (role: Member['role']) =>
+    mkRoom({
+      id: 'acct',
+      settings: { ...SETTINGS, drinkId: 'tea' },
+      timer: { ...TIMER, elapsedMs: 60_000 },
+      timerRev: 4,
+      members: [member('old', 'host', 1), member('me', role, 2)],
+    });
+
+  it.each(['host', 'cohost'] as const)(
+    'adopts the room, its timer and settings as %s without sending anything',
+    async (role) => {
+      await h.asHost();
+      h.es().emit('room', { now: Date.now(), you: 'me', room: ACCOUNT_ROOM(role) });
+      flushSync();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(h.rooms.room?.id).toBe('acct');
+      expect(h.rooms.role).toBe(role);
+      expect(h.rooms.locked).toBe(false);
+      expect(h.timer.state).toEqual({ ...TIMER, elapsedMs: 60_000 });
+      expect(h.drinks.selectedId).toBe('tea');
+      expect(h.api.patchRoom).not.toHaveBeenCalled();
+      expect(h.api.createRoom).not.toHaveBeenCalled();
+    },
+  );
+
+  it('locks controls as a guest and snapshots my own settings', async () => {
+    await h.asHost();
+    h.es().emit('room', { now: Date.now(), you: 'me', room: ACCOUNT_ROOM('guest') });
+    flushSync();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(h.rooms.room?.id).toBe('acct');
+    expect(h.rooms.role).toBe('guest');
+    expect(h.rooms.locked).toBe(true);
+    expect(h.timer.state).toEqual({ ...TIMER, elapsedMs: 60_000 });
+    expect(h.drinks.selectedId).toBe('tea');
+    expect(load('ownSettings', null)).toMatchObject({
+      drinkId: 'mocha',
+      backgroundId: 'night-lights',
+    });
+    expect(h.api.patchRoom).not.toHaveBeenCalled();
+    expect(h.api.createRoom).not.toHaveBeenCalled();
   });
 });
 

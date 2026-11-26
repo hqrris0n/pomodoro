@@ -1,4 +1,4 @@
-// HTTP client for /api/profiles (docs/protocol.md, "Profiles").
+// HTTP client for the account routes: /api/auth/* and /api/account.
 
 export type Profile = {
   username: string;
@@ -6,7 +6,6 @@ export type Profile = {
   settings: Record<string, unknown>;
   updatedAt: number;
 };
-export type ProfileSummary = { username: string; displayName: string };
 
 /** The server answered with an error status. */
 export class ProfileError extends Error {
@@ -18,19 +17,22 @@ export class ProfileError extends Error {
   }
 }
 
+export type Settings = Record<string, unknown>;
+export type Credentials = { username: string; password: string };
+
 export type ProfilesApi = {
-  list(token: string): Promise<ProfileSummary[]>;
-  get(token: string, username: string, timeoutMs?: number): Promise<Profile>;
-  create(
+  signup(
     token: string,
-    body: { username: string; displayName: string; settings: Record<string, unknown> },
+    body: Credentials & { displayName: string; settings: Settings },
   ): Promise<Profile>;
+  login(token: string, body: Credentials): Promise<Profile>;
+  logout(token: string): Promise<void>;
+  get(token: string, timeoutMs?: number): Promise<Profile>;
   put(
     token: string,
-    username: string,
-    body: { displayName: string; settings: Record<string, unknown> },
+    body: { displayName: string; settings: Settings },
   ): Promise<{ updatedAt: number }>;
-  remove(token: string, username: string): Promise<void>;
+  remove(token: string, password: string): Promise<void>;
 };
 
 const TIMEOUT_MS = 8000;
@@ -44,8 +46,9 @@ async function call<T>(
 ): Promise<T> {
   const headers: Record<string, string> = { Authorization: `Bearer ${token}` };
   if (body !== undefined) headers['Content-Type'] = 'application/json';
-  const res = await fetch(`/api/profiles${path}`, {
+  const res = await fetch(path, {
     method,
+    credentials: 'same-origin',
     headers,
     body: body === undefined ? undefined : JSON.stringify(body),
     signal: AbortSignal.timeout(timeoutMs),
@@ -66,17 +69,15 @@ async function call<T>(
   return data as T;
 }
 
-const seg = (username: string) => `/${encodeURIComponent(username)}`;
-
 export const realApi: ProfilesApi = {
-  async list(token) {
-    const data = await call<{ profiles?: unknown }>(token, 'GET', '');
-    return Array.isArray(data?.profiles) ? (data.profiles as ProfileSummary[]) : [];
+  signup: (token, body) => call(token, 'POST', '/api/auth/signup', body),
+  login: (token, body) => call(token, 'POST', '/api/auth/login', body),
+  async logout(token) {
+    await call(token, 'POST', '/api/auth/logout');
   },
-  get: (token, username, timeoutMs) => call(token, 'GET', seg(username), undefined, timeoutMs),
-  create: (token, body) => call(token, 'POST', '', body),
-  put: (token, username, body) => call(token, 'PUT', seg(username), body),
-  async remove(token, username) {
-    await call(token, 'DELETE', seg(username));
+  get: (token, timeoutMs) => call(token, 'GET', '/api/account', undefined, timeoutMs),
+  put: (token, body) => call(token, 'PUT', '/api/account', body),
+  async remove(token, password) {
+    await call(token, 'DELETE', '/api/account', { password });
   },
 };

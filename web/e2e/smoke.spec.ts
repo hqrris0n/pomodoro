@@ -161,7 +161,8 @@ test.describe('timer layout', () => {
   });
 });
 
-test('signing in from the Order-for card creates a user and saves settings to it', async ({
+// replaced by task G
+test.skip('signing in from the Order-for card creates a user and saves settings to it', async ({
   page,
 }) => {
   // Never reach a real server: other /api calls fail, profiles are mocked in memory.

@@ -1,28 +1,20 @@
 import { identity as realIdentity } from '../shell/identity.svelte';
-import { load } from '../storage';
-import { realApi, type ProfileSummary, type ProfilesApi } from './api';
-import { profileSync, type ProfileSync, type SyncStatus } from './sync';
+import { profileSync, type ProfileSync, type SignInResult, type SyncStatus } from './sync';
 
-type IdentityLike = { name: string; setName(name: string): boolean };
+type IdentityLike = { name: string };
 
-/** Reactive view of profile sync for the UI: who is signed in, the saved users, errors. */
+/** Reactive view of profile sync for the UI: who is logged in, errors. */
 export class ProfilesStore {
   current = $state<string | null>(null);
   status = $state<SyncStatus>('off');
   notice = $state<string | null>(null);
-  /** Users saved on the server, sorted by username. */
-  users = $state.raw<ProfileSummary[]>([]);
-  /** False after the list could not be fetched. */
-  reachable = $state(true);
   busy = $state(false);
 
   #sync: ProfileSync;
-  #api: ProfilesApi;
   #identity: IdentityLike;
 
-  constructor(sync: ProfileSync, api: ProfilesApi, identity: IdentityLike) {
+  constructor(sync: ProfileSync, identity: IdentityLike) {
     this.#sync = sync;
-    this.#api = api;
     this.#identity = identity;
     this.#pull();
     sync.subscribe(() => this.#pull());
@@ -34,63 +26,57 @@ export class ProfilesStore {
     this.notice = this.#sync.notice;
   }
 
-  #token(): string {
-    const t = load<unknown>('token', '');
-    return typeof t === 'string' ? t : '';
-  }
-
-  async refreshUsers(): Promise<void> {
-    try {
-      this.users = await this.#api.list(this.#token());
-      this.reachable = true;
-    } catch {
-      this.reachable = false;
-    }
-  }
-
   /** Returns an error message, or null. May reload the page. */
-  async signIn(username: string): Promise<string | null> {
+  logIn(username: string, password: string): Promise<string | null> {
+    return this.#auth(() => this.#sync.logIn(username, password));
+  }
+
+  /** Create an account and log in. Returns an error message, or null. */
+  signUp(username: string, password: string): Promise<string | null> {
+    return this.#auth(() => this.#sync.signUp(username, password));
+  }
+
+  async #auth(run: () => Promise<SignInResult>): Promise<string | null> {
     if (this.busy) return null;
     this.busy = true;
     try {
-      const r = await this.#sync.signIn(username);
+      const r = await run();
       this.#pull();
       if (!r.ok) return r.error;
-      // Created from this device's settings: nothing reloads, so show the new name now.
+      // Nothing reloads when the account started from this device's settings: show its name now.
       if (!r.deferred && r.displayName && this.#identity.name !== r.displayName) {
         this.#identity.name = r.displayName;
       }
-      void this.refreshUsers();
       return null;
     } finally {
       this.busy = false;
     }
   }
 
-  signOut(): void {
-    this.#sync.signOut();
-    this.#pull();
-  }
-
-  /** Returns an error message, or null. */
-  async remove(username: string): Promise<string | null> {
-    if (this.busy) return null;
+  /** Local settings stay; works even when the server can't be reached. */
+  async logOut(): Promise<void> {
+    if (this.busy) return;
     this.busy = true;
     try {
-      const err = await this.#sync.remove(username);
+      await this.#sync.logOut();
       this.#pull();
-      await this.refreshUsers();
-      return err;
     } finally {
       this.busy = false;
     }
   }
 
-  displayNameOf(username: string | null): string {
-    if (!username) return '';
-    if (username === this.current) return this.#identity.name;
-    return this.users.find((u) => u.username === username)?.displayName ?? username;
+  /** Returns an error message, or null (logged out, account gone). */
+  async deleteAccount(password: string): Promise<string | null> {
+    if (this.busy) return null;
+    this.busy = true;
+    try {
+      const err = await this.#sync.deleteAccount(password);
+      this.#pull();
+      return err;
+    } finally {
+      this.busy = false;
+    }
   }
 }
 
-export const profiles = new ProfilesStore(profileSync, realApi, realIdentity);
+export const profiles = new ProfilesStore(profileSync, realIdentity);

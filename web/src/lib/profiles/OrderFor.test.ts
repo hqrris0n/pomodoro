@@ -16,7 +16,7 @@ describe('OrderFor', () => {
   beforeEach(() => {
     localStorage.clear();
     save('token', identity.token);
-    profiles.signOut();
+    profiles.current = null;
     identity.setName('Mocha Otter');
   });
   afterEach(() => {
@@ -34,57 +34,36 @@ describe('OrderFor', () => {
     expect((screen.getByLabelText('Display name') as HTMLInputElement).value).toBe('Mocha Otter');
   });
 
-  it('signs in on Enter', async () => {
-    const signIn = vi.spyOn(profiles, 'signIn').mockResolvedValue(null);
+  it('logs in on Enter with the username and password', async () => {
+    const logIn = vi.spyOn(profiles, 'logIn').mockResolvedValue(null);
     render(OrderFor);
     const user = screen.getByLabelText('Username') as HTMLInputElement;
-    user.focus();
+    const password = screen.getByLabelText('Password');
     await fireEvent.input(user, { target: { value: '  Ada ' } });
-    await fireEvent.keyDown(user, { key: 'Enter' });
-    expect(signIn).toHaveBeenCalledWith('Ada');
-    expect(signIn).toHaveBeenCalledTimes(1);
+    await fireEvent.input(password, { target: { value: 'hunter22' } });
+    await fireEvent.keyDown(password, { key: 'Enter' });
+    expect(logIn).toHaveBeenCalledExactlyOnceWith('Ada', 'hunter22');
   });
 
-  it('does nothing for an empty username', async () => {
-    const signIn = vi.spyOn(profiles, 'signIn');
+  it('does nothing without a username and password', async () => {
+    const logIn = vi.spyOn(profiles, 'logIn');
     render(OrderFor);
-    const user = screen.getByLabelText('Username');
-    user.focus();
-    await fireEvent.keyDown(user, { key: 'Enter' });
-    expect(signIn).not.toHaveBeenCalled();
+    await fireEvent.keyDown(screen.getByLabelText('Username'), { key: 'Enter' });
+    expect(logIn).not.toHaveBeenCalled();
   });
 
-  it('shows a server error under the field', async () => {
+  it('shows the server error under the field', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn(async (_url: string, init?: RequestInit) =>
-        init?.method === 'POST'
-          ? json(409, { error: 'that username is taken' })
-          : json(404, { error: 'no such profile' }),
-      ),
+      vi.fn(async () => json(401, { error: 'Wrong username or password.' })),
     );
     render(OrderFor);
-    const user = screen.getByLabelText('Username');
-    user.focus();
-    await fireEvent.input(user, { target: { value: 'Ada' } });
-    await fireEvent.keyDown(user, { key: 'Enter' });
-    expect(await screen.findByRole('alert')).toHaveTextContent(/taken/);
+    await fireEvent.input(screen.getByLabelText('Username'), { target: { value: 'Ada' } });
+    const password = screen.getByLabelText('Password');
+    await fireEvent.input(password, { target: { value: 'hunter22' } });
+    await fireEvent.keyDown(password, { key: 'Enter' });
+    expect(await screen.findByRole('alert')).toHaveTextContent('Wrong username or password.');
     expect(profiles.current).toBeNull();
-  });
-
-  it("shows when the café can't be reached", async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => {
-        throw new TypeError('Failed to fetch');
-      }),
-    );
-    render(OrderFor);
-    const user = screen.getByLabelText('Username');
-    user.focus();
-    await fireEvent.input(user, { target: { value: 'Ada' } });
-    await fireEvent.blur(user);
-    expect(await screen.findByRole('alert')).toHaveTextContent("Can't reach the café right now.");
   });
 
   it('saves the display name and rejects an empty one', async () => {
