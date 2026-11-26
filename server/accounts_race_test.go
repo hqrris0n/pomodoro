@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bufio"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -287,5 +289,154 @@ func TestRaceLoginOneCookieSurvivesHTTP(t *testing.T) {
 		if valid != 1 {
 			t.Fatalf("iter %d: %d valid cookies, want 1", it, valid)
 		}
+	}
+}
+
+// Kick-out: device A signs up and listens; device B logs in. A's stream hears
+// "session: revoked" and A's cookie is dead; B's works.
+func TestRaceKickOutHTTP(t *testing.T) {
+	devA, devB := raceBearer(1), raceBearer(2)
+	for it := range repeatCount() {
+		srv, _, _ := newRaceServer(t)
+		a := fire(srv, "POST", "/api/auth/signup", raceCreds("ada"), devA, "")
+		if a.Status != http.StatusCreated {
+			t.Fatalf("iter %d signup: %d %s", it, a.Status, a.Body)
+		}
+		resp, err := srv.Client().Get(srv.URL + "/api/events?name=Ada&token=" + devA)
+		if err != nil {
+			t.Fatal(err)
+		}
+		br := bufio.NewReader(resp.Body)
+		readEvent(t, br) // rooms
+		readEvent(t, br) // room
+
+		b := fire(srv, "POST", "/api/auth/login", raceCreds("ada"), devB, "")
+		if b.Status != http.StatusOK {
+			t.Fatalf("iter %d login: %d %s", it, b.Status, b.Body)
+		}
+		if name, data := readEvent(t, br); name != "session" || data["state"] != "revoked" || data["now"] == nil {
+			t.Fatalf("iter %d: A's stream got %s %v", it, name, data)
+		}
+		resp.Body.Close()
+		if r := fire(srv, "GET", "/api/account", "", devA, cookiePair(a.SetCookie)); r.Status != http.StatusUnauthorized {
+			t.Fatalf("iter %d: A's account: %d %s", it, r.Status, r.Body)
+		}
+		if r := fire(srv, "GET", "/api/account", "", devB, cookiePair(b.SetCookie)); r.Status != http.StatusOK {
+			t.Fatalf("iter %d: B's account: %d %s", it, r.Status, r.Body)
+		}
+	}
+}
+
+// Room handover under concurrent logins: A hosts; three devices log in at
+// once. The one whose session survived is the host, A is a guest, and the
+// other two are not the host.
+func TestRaceLoginHandoverHTTP(t *testing.T) {
+	const n = 3
+	devA := raceBearer(100)
+	body, _ := json.Marshal(createBody(nil))
+	for it := range repeatCount() {
+		srv, _, h := newRaceServer(t)
+		a := fire(srv, "POST", "/api/auth/signup", raceCreds("ada"), devA, "")
+		c := fire(srv, "POST", "/api/rooms", string(body), devA, "")
+		var room Room
+		if a.Status != http.StatusCreated || c.Status != http.StatusOK || json.Unmarshal([]byte(c.Body), &room) != nil {
+			t.Fatalf("iter %d setup: %d %s / %d %s", it, a.Status, a.Body, c.Status, c.Body)
+		}
+		res := race(n, func(i int) raceResp {
+			return fire(srv, "POST", "/api/auth/login", raceCreds("ada"), raceBearer(i), "")
+		})
+		winner := -1
+		for i, r := range res {
+			if r.Status != http.StatusOK {
+				t.Fatalf("iter %d login %d: %d %s", it, i, r.Status, r.Body)
+			}
+			switch got := fire(srv, "GET", "/api/account", "", raceBearer(i), cookiePair(r.SetCookie)); got.Status {
+			case http.StatusOK:
+				if winner >= 0 {
+					t.Fatalf("iter %d: logins %d and %d both valid", it, winner, i)
+				}
+				winner = i
+			case http.StatusUnauthorized:
+			default:
+				t.Fatalf("iter %d cookie %d: %d %s", it, i, got.Status, got.Body)
+			}
+		}
+		if winner < 0 {
+			t.Fatalf("iter %d: no valid session", it)
+		}
+		got, _ := h.room(room.ID)
+		if roleOf(got, raceBearer(winner)) != roleHost || roleOf(got, devA) != roleGuest {
+			t.Fatalf("iter %d: winner %d, members %+v", it, winner, got.Members)
+		}
+		for i := range n {
+			if i != winner && roleOf(got, raceBearer(i)) == roleHost {
+				t.Fatalf("iter %d: loser %d is host", it, i)
+			}
+		}
+	}
+}
+
+// Logging out on the linked device unlinks it: a later login elsewhere sends
+// it nothing and leaves its room alone.
+func TestLogoutUnlinksDevice(t *testing.T) {
+	srv, _, h := newRaceServer(t)
+	devA, devB := raceBearer(1), raceBearer(2)
+	a := fire(srv, "POST", "/api/auth/signup", raceCreds("ada"), devA, "")
+	body, _ := json.Marshal(createBody(nil))
+	c := fire(srv, "POST", "/api/rooms", string(body), devA, "")
+	var room Room
+	if a.Status != http.StatusCreated || json.Unmarshal([]byte(c.Body), &room) != nil {
+		t.Fatalf("setup: %d %s / %d %s", a.Status, a.Body, c.Status, c.Body)
+	}
+	cn, err := h.Connect(devA, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := fire(srv, "POST", "/api/auth/logout", "", devA, cookiePair(a.SetCookie)); r.Status != http.StatusOK {
+		t.Fatalf("logout: %d %s", r.Status, r.Body)
+	}
+	drain(cn)
+	if r := fire(srv, "POST", "/api/auth/login", raceCreds("ada"), devB, ""); r.Status != http.StatusOK {
+		t.Fatalf("login: %d %s", r.Status, r.Body)
+	}
+	if evs := drain(cn); len(evs) != 0 {
+		t.Fatalf("logged-out device got %v", namesOf(evs))
+	}
+	if got, _ := h.room(room.ID); roleOf(got, devA) != roleHost || roleOf(got, devB) != "" {
+		t.Fatalf("members %+v", got.Members)
+	}
+}
+
+func TestReplacedOnlyOverLiveSession(t *testing.T) {
+	clk := &fakeClock{t: time.UnixMilli(1_700_000_000_000)}
+	s := openProfilesIter(t.TempDir(), clk.Now, t.Logf, testPBKDF2Iter)
+	login := func() sessionGrant {
+		t.Helper()
+		g, err := s.Login("ada", racePW)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return g
+	}
+	if g := signUpAs(t, s, "ada"); g.Replaced {
+		t.Fatal("sign-up replaced a session")
+	}
+	g := login()
+	if !g.Replaced {
+		t.Fatal("login over a live session: Replaced false")
+	}
+	if g, err := s.ChangePassword(g.Token, racePW, racePW); err != nil || !g.Replaced {
+		t.Fatalf("change password over a live session: %+v %v", g, err)
+	}
+	g = login()
+	if err := s.Logout(g.Token); err != nil {
+		t.Fatal(err)
+	}
+	if login().Replaced {
+		t.Fatal("login after logout: Replaced true")
+	}
+	clk.Advance(sessionTTL)
+	if login().Replaced {
+		t.Fatal("login after expiry: Replaced true")
 	}
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -956,5 +957,275 @@ func TestRoomViewMixesNeverNull(t *testing.T) {
 	raw, _ := json.Marshal(r)
 	if !strings.Contains(string(raw), `"mixes":[]`) {
 		t.Fatalf("view = %s", raw)
+	}
+}
+
+// --- account handover ---
+
+func namesOf(evs []event) []string {
+	out := make([]string, len(evs))
+	for i, e := range evs {
+		out[i] = e.name
+	}
+	return out
+}
+
+func memberAt(t *testing.T, r Room, id string) (int, Member) {
+	t.Helper()
+	for i, m := range r.Members {
+		if m.ID == id {
+			return i, m
+		}
+	}
+	t.Fatalf("no member %s in %+v", id, r.Members)
+	return -1, Member{}
+}
+
+func TestHandoverKeepsRoleNameAndPlace(t *testing.T) {
+	hal, ada, gus, bee := tok(1), tok(2), tok(3), tok(4)
+	for _, role := range []string{roleHost, roleCohost, roleGuest} {
+		t.Run(role, func(t *testing.T) {
+			h, clk := newTestHub()
+			ca, _ := h.Connect(ada, "Ada phone")
+			cg, _ := h.Connect(gus, "Gus")
+			cb, _ := h.Connect(bee, "Ada laptop")
+			var id string
+			if role == roleHost {
+				id = mustCreate(t, h, ada, "Ada").ID
+			} else {
+				id = mustCreate(t, h, hal, "Hal").ID
+				clk.Advance(time.Second)
+				mustJoin(t, h, ada, id, "Ada")
+				if role == roleCohost {
+					if _, err := h.SetRole(hal, id, memberID(ada), roleCohost); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			clk.Advance(time.Second)
+			mustJoin(t, h, gus, id, "Gus")
+			tm := testTimer(h, true)
+			if _, err := h.Patch(memberOrHost(role, ada, hal), id, nil, &tm, false); err != nil {
+				t.Fatal(err)
+			}
+			h.ClaimAccount("Ada", 1, ada, false)
+			before, _ := h.room(id)
+			drain(ca)
+			drain(cg)
+			drain(cb)
+			clk.Advance(time.Second)
+
+			h.ClaimAccount("ADA", 2, bee, true) // usernames ignore case
+
+			evA := drain(ca)
+			wantFrame := "event: session\ndata: {\"now\":" + fmt.Sprint(h.nowMs()) + ",\"state\":\"revoked\"}\n\n"
+			if len(evA) < 2 || evA[0].raw != wantFrame {
+				t.Fatalf("old device events %v, want %q first", evA, wantFrame)
+			}
+			after, _ := h.room(id)
+			if after.TimerRev != before.TimerRev || !reflect.DeepEqual(after.Timer, before.Timer) {
+				t.Fatalf("timer changed: %+v rev %d -> %+v rev %d", before.Timer, before.TimerRev, after.Timer, after.TimerRev)
+			}
+			if len(after.Members) != len(before.Members)+1 {
+				t.Fatalf("members %+v -> %+v", before.Members, after.Members)
+			}
+			i, was := memberAt(t, before, memberID(ada))
+			now := after.Members[i]
+			if now.ID != memberID(bee) || now.Name != was.Name || now.Role != role || now.JoinedAt != was.JoinedAt {
+				t.Fatalf("slot %d: %+v, want %+v bound to the new device", i, now, was)
+			}
+			for j, m := range before.Members {
+				if j != i && after.Members[j] != m {
+					t.Fatalf("member %d changed: %+v -> %+v", j, m, after.Members[j])
+				}
+			}
+			last := after.Members[len(after.Members)-1]
+			if last != (Member{ID: memberID(ada), Name: "Ada phone", Role: roleGuest, JoinedAt: h.nowMs()}) {
+				t.Fatalf("old device: %+v", last)
+			}
+			// Every device's next view agrees; only the old device hears "session".
+			for name, cn := range map[string]*conn{"old": ca, "guest": cg, "new": cb} {
+				evs := evA
+				if cn != ca {
+					evs = drain(cn)
+					if lastOf(evs, "session") != nil {
+						t.Fatalf("%s device got a session event", name)
+					}
+				}
+				ev := lastOf(evs, "room")
+				if ev == nil {
+					t.Fatalf("%s device: no room event", name)
+				}
+				ms := sub(ev.data, "room")["members"].([]any)
+				if m := ms[i].(map[string]any); m["id"] != memberID(bee) || m["name"] != was.Name || m["role"] != role {
+					t.Fatalf("%s device sees %v", name, m)
+				}
+			}
+		})
+	}
+}
+
+// memberOrHost picks who can patch the timer for the role case.
+func memberOrHost(role, member, host string) string {
+	if role == roleHost {
+		return member
+	}
+	return host
+}
+
+func TestHandoverMovesNewDeviceOutOfItsOwnRoom(t *testing.T) {
+	ada, bee, xan := tok(1), tok(2), tok(3)
+	cases := []struct {
+		name  string
+		setup func(t *testing.T, h *hub, adaRoom string) (beeRoom string)
+	}{
+		{"alone in its own room", func(t *testing.T, h *hub, _ string) string {
+			return mustCreate(t, h, bee, "Bee").ID
+		}},
+		{"hosting a guest", func(t *testing.T, h *hub, _ string) string {
+			id := mustCreate(t, h, bee, "Bee").ID
+			mustJoin(t, h, xan, id, "Xan")
+			return id
+		}},
+		{"a guest in the same room", func(t *testing.T, h *hub, adaRoom string) string {
+			mustJoin(t, h, bee, adaRoom, "Bee")
+			return adaRoom
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			h, clk := newTestHub()
+			id := mustCreate(t, h, ada, "Ada").ID
+			clk.Advance(time.Second)
+			beeRoom := c.setup(t, h, id)
+			h.ClaimAccount("ada", 1, ada, false)
+			h.ClaimAccount("ada", 2, bee, true)
+
+			got, _ := h.room(id)
+			if _, m := memberAt(t, got, memberID(bee)); m.Role != roleHost || m.Name != "Ada" {
+				t.Fatalf("new device: %+v", m)
+			}
+			if _, m := memberAt(t, got, memberID(ada)); m.Role != roleGuest {
+				t.Fatalf("old device: %+v", m)
+			}
+			if len(got.Members) != 2 {
+				t.Fatalf("members %+v", got.Members)
+			}
+			if beeRoom == id {
+				return
+			}
+			old, ok := h.room(beeRoom)
+			switch c.name {
+			case "alone in its own room":
+				if ok {
+					t.Fatalf("emptied room still exists: %+v", old)
+				}
+			default:
+				if !ok || len(old.Members) != 1 || roleOf(old, xan) != roleHost {
+					t.Fatalf("left room: %+v", old)
+				}
+			}
+		})
+	}
+}
+
+func TestHandoverIntoFullRoomDropsOldDevice(t *testing.T) {
+	h, _ := newTestHub()
+	ada, bee := tok(1), tok(2)
+	id := mustCreate(t, h, ada, "Ada").ID
+	for i := 1; i < maxMembers; i++ {
+		mustJoin(t, h, tok(100+i), id, "Guest")
+	}
+	h.ClaimAccount("ada", 1, ada, false)
+	h.ClaimAccount("ada", 2, bee, true)
+	got, _ := h.room(id)
+	if len(got.Members) != maxMembers || roleOf(got, bee) != roleHost || roleOf(got, ada) != "" {
+		t.Fatalf("members %+v", got.Members)
+	}
+}
+
+// Claims that do not move the link to a newer session on another device
+// change nothing and send nothing.
+func TestClaimIgnoresSameDeviceAndStaleSessions(t *testing.T) {
+	h, _ := newTestHub()
+	ada, bee, cy := tok(1), tok(2), tok(3)
+	id := mustCreate(t, h, ada, "Ada").ID
+	ca, _ := h.Connect(ada, "")
+	cb, _ := h.Connect(bee, "")
+	cc, _ := h.Connect(cy, "")
+
+	h.ClaimAccount("ada", 1, ada, false)
+	h.ClaimAccount("ada", 2, ada, true) // new session, same device
+	if evs := drain(ca); len(evs) != 2 || lastOf(evs, "session") != nil {
+		t.Fatalf("same-device claim sent %v", namesOf(evs)) // just the connect frames
+	}
+
+	// The store granted gen 3 to bee (replacing ada) and then gen 4 to cy
+	// (replacing bee), but the hub hears cy first: cy takes over from ada,
+	// the device the hub links, and bee's late claim must not take it back.
+	drain(ca)
+	h.ClaimAccount("ada", 4, cy, true)
+	if lastOf(drain(ca), "session") == nil {
+		t.Fatal("ada was not told its session ended")
+	}
+	drain(cb)
+	h.ClaimAccount("ada", 3, bee, true)
+	got, _ := h.room(id)
+	if roleOf(got, cy) != roleHost || roleOf(got, bee) != "" || roleOf(got, ada) != roleGuest {
+		t.Fatalf("members %+v", got.Members)
+	}
+	if evs := drain(cb); len(evs) != 0 {
+		t.Fatalf("stale claim sent %v to its device", namesOf(evs))
+	}
+	if evs := drain(cc); lastOf(evs, "session") != nil {
+		t.Fatalf("winner got %v", namesOf(evs))
+	}
+}
+
+func TestReleaseAccountOnlyByLinkedDevice(t *testing.T) {
+	h, _ := newTestHub()
+	ada, bee, cy := tok(1), tok(2), tok(3)
+	id := mustCreate(t, h, ada, "Ada").ID
+	ca, _ := h.Connect(ada, "")
+	h.ClaimAccount("ada", 1, ada, false)
+
+	h.ReleaseAccount("ada", bee) // not the linked device: kept
+	h.ClaimAccount("ada", 2, bee, true)
+	if lastOf(drain(ca), "session") == nil {
+		t.Fatal("release by another device dropped the link")
+	}
+
+	cb, _ := h.Connect(bee, "")
+	drain(cb)
+	h.ReleaseAccount("ADA", bee) // logout on the linked device
+	h.ClaimAccount("ada", 3, cy, true)
+	got, _ := h.room(id)
+	if roleOf(got, bee) != roleHost || roleOf(got, cy) != "" {
+		t.Fatalf("claim after release moved the room: %+v", got.Members)
+	}
+	if evs := drain(cb); len(evs) != 0 {
+		t.Fatalf("released device got %v", namesOf(evs))
+	}
+}
+
+// A login that did not replace a live session (the linked device had logged
+// out or expired, its release not yet heard) moves the link but leaves that
+// device alone.
+func TestClaimWithoutReplacedSessionLeavesOldDevice(t *testing.T) {
+	h, _ := newTestHub()
+	ada, bee, cy := tok(1), tok(2), tok(3)
+	id := mustCreate(t, h, ada, "Ada").ID
+	ca, _ := h.Connect(ada, "")
+	h.ClaimAccount("ada", 1, ada, false)
+	drain(ca)
+
+	h.ClaimAccount("ada", 2, bee, false)
+	h.ClaimAccount("ada", 3, cy, true) // replaces bee, not ada
+	if evs := drain(ca); len(evs) != 0 {
+		t.Fatalf("logged-out device got %v", namesOf(evs))
+	}
+	got, _ := h.room(id)
+	if len(got.Members) != 1 || roleOf(got, ada) != roleHost {
+		t.Fatalf("members %+v", got.Members)
 	}
 }

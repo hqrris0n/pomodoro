@@ -303,7 +303,7 @@ type credentials struct {
 	Password string `json:"password"`
 }
 
-func (a *api) signup(w http.ResponseWriter, r *http.Request, _ string) error {
+func (a *api) signup(w http.ResponseWriter, r *http.Request, device string) error {
 	if err := a.profilesOn(); err != nil {
 		return err
 	}
@@ -339,13 +339,14 @@ func (a *api) signup(w http.ResponseWriter, r *http.Request, _ string) error {
 	if err != nil {
 		return err
 	}
-	// task C: hub handover (link the device token to g.Profile.Username and g.Gen)
+	// After the store call, never under its lock (see handover.go).
+	a.h.ClaimAccount(g.Profile.Username, g.Gen, device, g.Replaced)
 	startSession(w, g.Token)
 	writeJSON(w, 201, g.Profile)
 	return nil
 }
 
-func (a *api) login(w http.ResponseWriter, r *http.Request, _ string) error {
+func (a *api) login(w http.ResponseWriter, r *http.Request, device string) error {
 	if err := a.profilesOn(); err != nil {
 		return err
 	}
@@ -366,39 +367,47 @@ func (a *api) login(w http.ResponseWriter, r *http.Request, _ string) error {
 		}
 		return err
 	}
-	// task C: hub handover (link the device token to g.Profile.Username and g.Gen)
+	// After the store call, never under its lock (see handover.go).
+	a.h.ClaimAccount(g.Profile.Username, g.Gen, device, g.Replaced)
 	startSession(w, g.Token)
 	writeJSON(w, 200, g.Profile)
 	return nil
 }
 
-func (a *api) logout(w http.ResponseWriter, r *http.Request, _ string) error {
+func (a *api) logout(w http.ResponseWriter, r *http.Request, device string) error {
 	if err := a.profilesOn(); err != nil {
 		return err
 	}
-	if err := a.p.Logout(sessionToken(r)); err != nil {
+	token := sessionToken(r)
+	p, _, lookupErr := a.p.Lookup(token)
+	if err := a.p.Logout(token); err != nil {
 		return err
+	}
+	if lookupErr == nil {
+		a.h.ReleaseAccount(p.Username, device)
 	}
 	clearSession(w)
 	writeJSON(w, 200, struct{}{})
 	return nil
 }
 
-func (a *api) getAccount(w http.ResponseWriter, r *http.Request, _ string) error {
+func (a *api) getAccount(w http.ResponseWriter, r *http.Request, device string) error {
 	if err := a.profilesOn(); err != nil {
 		return err
 	}
 	token := sessionToken(r)
-	p, _, err := a.p.Lookup(token)
+	p, gen, err := a.p.Lookup(token)
 	if err != nil {
 		return err
 	}
+	// Re-link, so links survive a server restart; a no-op when current.
+	a.h.ClaimAccount(p.Username, gen, device, false)
 	startSession(w, token)
 	writeJSON(w, 200, p)
 	return nil
 }
 
-func (a *api) putAccount(w http.ResponseWriter, r *http.Request, _ string) error {
+func (a *api) putAccount(w http.ResponseWriter, r *http.Request, device string) error {
 	if err := a.profilesOn(); err != nil {
 		return err
 	}
@@ -425,12 +434,17 @@ func (a *api) putAccount(w http.ResponseWriter, r *http.Request, _ string) error
 	if err != nil {
 		return err
 	}
+	// Re-link as in getAccount. Put just renewed the session, so this
+	// Lookup does not write the file.
+	if p, gen, err := a.p.Lookup(token); err == nil {
+		a.h.ClaimAccount(p.Username, gen, device, false)
+	}
 	startSession(w, token)
 	writeJSON(w, 200, map[string]int64{"updatedAt": at})
 	return nil
 }
 
-func (a *api) deleteAccount(w http.ResponseWriter, r *http.Request, _ string) error {
+func (a *api) deleteAccount(w http.ResponseWriter, r *http.Request, device string) error {
 	if err := a.profilesOn(); err != nil {
 		return err
 	}
@@ -454,6 +468,7 @@ func (a *api) deleteAccount(w http.ResponseWriter, r *http.Request, _ string) er
 		}
 		return err
 	}
+	a.h.ReleaseAccount(p.Username, device)
 	clearSession(w)
 	writeJSON(w, 200, struct{}{})
 	return nil

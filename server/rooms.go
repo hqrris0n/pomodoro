@@ -62,6 +62,7 @@ type hub struct {
 	streams   int
 	lastRooms []byte // last broadcast room list, to skip no-op broadcasts
 	dirty     map[*client]struct{}
+	accounts  map[string]accountLink // lowercased username -> device holding its session
 }
 
 type room struct {
@@ -114,6 +115,7 @@ func newHub(now func() time.Time, logf func(string, ...any)) *hub {
 		clients:   map[string]*client{},
 		lastRooms: []byte("[]"),
 		dirty:     map[*client]struct{}{},
+		accounts:  map[string]accountLink{},
 	}
 }
 

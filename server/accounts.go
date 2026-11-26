@@ -74,6 +74,9 @@ type sessionGrant struct {
 	Token   string
 	Gen     uint64
 	Profile Profile
+	// Replaced reports that this session ended one that was still live
+	// (present and unexpired) when it was swapped in, under s.mu.
+	Replaced bool
 }
 
 func validatePassword(p string) error {
@@ -153,6 +156,11 @@ func validSessionHash(h string) bool {
 	}
 	_, err := hex.DecodeString(h)
 	return err == nil && strings.ToLower(h) == h
+}
+
+// liveLocked reports whether a has an unexpired session. Callers hold s.mu.
+func (s *profileStore) liveLocked(a account) bool {
+	return a.SessionHash != "" && a.SessionExpires > s.now().UnixMilli()
 }
 
 // startSessionLocked gives a a fresh session and returns its plain token.
@@ -281,13 +289,14 @@ func (s *profileStore) Login(username, password string) (sessionGrant, error) {
 	}
 	s.hook("login")
 	old := cur
+	replaced := s.liveLocked(cur)
 	token := s.startSessionLocked(&cur)
 	s.setLocked(k, cur)
 	if err := s.save(); err != nil {
 		s.setLocked(k, old)
 		return sessionGrant{}, errProfilesSave
 	}
-	return sessionGrant{Token: token, Gen: cur.SessionGen, Profile: cur.Profile}, nil
+	return sessionGrant{Token: token, Gen: cur.SessionGen, Profile: cur.Profile, Replaced: replaced}, nil
 }
 
 // Lookup returns the account and session generation for a live token and
@@ -426,6 +435,7 @@ func (s *profileStore) ChangePassword(token, current, next string) (sessionGrant
 	}
 	s.hook("change-password")
 	old := cur
+	replaced := s.liveLocked(cur)
 	cur.PasswordHash = ph
 	token = s.startSessionLocked(&cur)
 	s.setLocked(k, cur)
@@ -433,7 +443,7 @@ func (s *profileStore) ChangePassword(token, current, next string) (sessionGrant
 		s.setLocked(k, old)
 		return sessionGrant{}, errProfilesSave
 	}
-	return sessionGrant{Token: token, Gen: cur.SessionGen, Profile: cur.Profile}, nil
+	return sessionGrant{Token: token, Gen: cur.SessionGen, Profile: cur.Profile, Replaced: replaced}, nil
 }
 
 // updatedLocked returns old with new displayName and settings and an
