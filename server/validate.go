@@ -62,6 +62,8 @@ type Room struct {
 	Timer    *Timer   `json:"timer"`
 	TimerRev uint64   `json:"timerRev"`
 	Members  []Member `json:"members"`
+	// Claims maps a channel id to the member id adjusting it; unexpired only.
+	Claims map[string]string `json:"claims"`
 }
 
 type RoomSummary struct {

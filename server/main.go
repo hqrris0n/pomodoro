@@ -46,6 +46,7 @@ func main() {
 	profiles := openProfiles(*data, time.Now, log.Printf)
 	stop := make(chan struct{})
 	go h.runJanitor(5*time.Second, stop)
+	go h.runClaimExpiry(time.Second, stop)
 
 	// ReadHeaderTimeout guards against slow-header clients. There is no
 	// WriteTimeout because it would cut off long-lived SSE streams.

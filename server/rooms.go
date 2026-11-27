@@ -71,10 +71,12 @@ type room struct {
 	id       string
 	seq      uint64 // creation order, for a stable list
 	settings Settings
-	timer    *Timer    // nil while the host is choosing the next order
-	timerRev uint64    // bumped whenever timer is replaced or cleared
-	setAt    time.Time // when timer was last replaced or cleared (finish time of a paused, finished timer)
-	members  []*member // in join order; index 0 is the earliest joiner
+	timer    *Timer           // nil while the host is choosing the next order
+	timerRev uint64           // bumped whenever timer is replaced or cleared
+	setAt    time.Time        // when timer was last replaced or cleared (finish time of a paused, finished timer)
+	members  []*member        // in join order; index 0 is the earliest joiner
+	claims   map[string]claim // channel -> holder; may hold expired entries, see claims.go
+	now      func() time.Time
 }
 
 type member struct {
@@ -198,7 +200,8 @@ func (r *room) view() Room {
 	for _, m := range r.succession() {
 		ms = append(ms, Member{ID: m.c.id, Name: m.name, Role: m.role, JoinedAt: m.joinedAt, PromotedAt: m.promotedAt})
 	}
-	return Room{ID: r.id, Settings: r.settings, Timer: r.timerView(), TimerRev: r.timerRev, Members: ms}
+	return Room{ID: r.id, Settings: r.settings, Timer: r.timerView(), TimerRev: r.timerRev, Members: ms,
+		Claims: r.claimsView(r.now())}
 }
 
 // timerView copies the timer so a view never aliases room state.
@@ -402,6 +405,7 @@ func (h *hub) leaveLocked(c *client) {
 		return
 	}
 	h.dirty[c] = struct{}{}
+	r.dropClaims(c.id)
 	for i, m := range r.members {
 		if m.c == c {
 			r.members = append(r.members[:i], r.members[i+1:]...)
@@ -502,7 +506,8 @@ func (h *hub) CreateRoom(token, name string, s Settings, t Timer) (Room, error) 
 	if s.Mixes == nil {
 		s.Mixes = []SavedMix{}
 	}
-	r := &room{id: h.newRoomID(), seq: h.nextSeq, settings: s, timer: &t, timerRev: 1, setAt: h.now()}
+	r := &room{id: h.newRoomID(), seq: h.nextSeq, settings: s, timer: &t, timerRev: 1, setAt: h.now(),
+		claims: map[string]claim{}, now: h.now}
 	r.members = []*member{{c: c, name: name, role: roleHost, joinedAt: h.nowMs()}}
 	h.rooms[r.id] = r
 	c.roomID = r.id
@@ -579,6 +584,10 @@ func (h *hub) Patch(token, roomID string, s *settingsPatch, t *Timer, clearTimer
 	if me.role != roleHost && (clearTimer || (t != nil && r.timer == nil)) {
 		return Room{}, errNotHost
 	}
+	now := h.now()
+	if s != nil && r.blockedByClaim(s.Mix, c.id, now) {
+		return Room{}, errClaimed
+	}
 	if s != nil {
 		if s.Mixes != nil && me.role != roleHost && !onlyAppends(r.settings.Mixes, s.Mixes) {
 			return Room{}, errMixesAppendOnly
@@ -611,6 +620,7 @@ func (h *hub) Patch(token, roomID string, s *settingsPatch, t *Timer, clearTimer
 		if merged != nil {
 			r.settings.Mix = merged
 		}
+		r.renewClaims(s.Mix, c.id, now)
 		if s.Mixes != nil {
 			r.settings.Mixes = s.Mixes
 		}
@@ -676,6 +686,7 @@ func (h *hub) SetRole(token, roomID, targetID, role string) (Room, error) {
 					m.promoSeq, m.promotedAt = h.promoSeq, h.nowMs()
 				} else {
 					m.promoSeq, m.promotedAt = 0, 0
+					r.dropClaims(m.c.id)
 				}
 			}
 			h.touchAll(r)
@@ -786,6 +797,7 @@ func (h *hub) Sweep() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	now := h.now()
+	h.expireClaimsLocked(now)
 
 	for id, r := range h.rooms {
 		why := ""

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"unicode/utf8"
 )
 
 const maxBodyBytes = 4 << 10
@@ -25,6 +26,8 @@ func newAPI(h *hub, p *profileStore, o apiOptions) http.Handler {
 	mux.HandleFunc("POST /api/rooms/{id}/leave", a.command(a.leave))
 	mux.HandleFunc("PATCH /api/rooms/{id}", a.commandLimit(maxSettingsLen, a.patch))
 	mux.HandleFunc("POST /api/rooms/{id}/role", a.command(a.setRole))
+	mux.HandleFunc("POST /api/rooms/{id}/claim", a.command(a.claim))
+	mux.HandleFunc("POST /api/rooms/{id}/release", a.command(a.release))
 	mux.HandleFunc("POST /api/rooms/{id}/notes", a.command(a.note))
 	mux.HandleFunc("PUT /api/me", a.command(a.rename))
 	mux.HandleFunc("POST /api/auth/signup", a.commandLimit(profileBodyBytes, a.signup))
@@ -277,5 +280,45 @@ func (a *api) rename(w http.ResponseWriter, r *http.Request, token string) error
 		return err
 	}
 	writeJSON(w, 200, struct{}{})
+	return nil
+}
+
+// channelBody reads and validates the {channel} body of claim and release.
+func channelBody(r *http.Request) (string, error) {
+	var in struct {
+		Channel string `json:"channel"`
+	}
+	if err := decode(r, &in); err != nil {
+		return "", err
+	}
+	if n := utf8.RuneCountInString(in.Channel); n < 1 || n > maxIDLen {
+		return "", badRequest("channel must be 1 to %d characters", maxIDLen)
+	}
+	return in.Channel, nil
+}
+
+func (a *api) claim(w http.ResponseWriter, r *http.Request, token string) error {
+	ch, err := channelBody(r)
+	if err != nil {
+		return err
+	}
+	room, err := a.h.Claim(token, r.PathValue("id"), ch)
+	if err != nil {
+		return err
+	}
+	writeJSON(w, 200, room)
+	return nil
+}
+
+func (a *api) release(w http.ResponseWriter, r *http.Request, token string) error {
+	ch, err := channelBody(r)
+	if err != nil {
+		return err
+	}
+	room, err := a.h.ReleaseClaim(token, r.PathValue("id"), ch)
+	if err != nil {
+		return err
+	}
+	writeJSON(w, 200, room)
 	return nil
 }

@@ -100,6 +100,7 @@ func (h *hub) handoverLocked(old *client, newToken string) {
 	if m == nil {
 		return // unreachable: old.roomID always names a room old is in
 	}
+	r.dropClaims(old.id) // the new device holds none
 	m.c = nc
 	nc.roomID = r.id
 	old.roomID = ""

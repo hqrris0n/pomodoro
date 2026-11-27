@@ -67,6 +67,7 @@ type Room = {
   timer: TimerState | null; // null between timers, see below
   timerRev: number;         // starts at 1, +1 every time the timer is replaced or cleared
   members: Member[];       // in succession order: host, co-hosts by promotion, guests by join
+  claims: Record<string, string>; // channel id -> id of the member adjusting it; unexpired only, `{}` when none
 };
 type RoomSummary = {
   id: string; ownerName: string; memberCount: number; drinkId: string;
@@ -94,11 +95,13 @@ room at all.
 | `POST /rooms/{id}/leave`      | member  | —                                 | Leaves. |
 | `PATCH /rooms/{id}`           | host, co-host | `{settings?, timer?}`             | `timer` is replaced; `timer: null` clears it (host only). `settings` is a partial object, merged into the room's (see below). |
 | `POST /rooms/{id}/role`       | host    | `{memberId, role}`                | Sets that member's role to `"cohost"` or `"guest"`. The host's own role cannot change (400); an unknown member is 404. |
+| `POST /rooms/{id}/claim`      | host, co-host | `{channel}`                 | Takes control of one sound channel, see "Channel claims". 409 if another member holds it. Returns `Room`. |
+| `POST /rooms/{id}/release`    | member  | `{channel}`                       | Releases the caller's claim on that channel; anything else is a no-op. Returns `Room`. |
 | `POST /rooms/{id}/notes`      | member  | `{to, text}`                      | Sends a sticky note to another member of the room. Returns `202 {id}`. |
 | `PUT /me`                     | anyone  | `{name}`                          | Renames the caller in their room. |
 | `GET /health`                 | anyone  | —                                 | `200 ok` |
 
-Responses: `POST /rooms`, `join`, `PATCH` and `role` return the `Room`;
+Responses: `POST /rooms`, `join`, `PATCH`, `role`, `claim` and `release` return the `Room`;
 `leave` and `PUT /me` return `{}`; `notes` returns `202 {id}`. `name` in a body is optional and falls back
 to the name given on the stream. `PUT /me` while in no room is a 403 (the name
 is sent again with the next create or join). Joining the room you are already
@@ -119,7 +122,7 @@ A missing `timer` keeps the timer and `"timer": null` clears it;
 `timer.anchorAt` sent by a client is treated as a boolean: non-null means
 "running", and the server replaces it with its own `now`. Errors are
 `{error: string}` with 400 (invalid), 403 (not a host or co-host / not the host for `role` / not a member),
-404 (no such room), 429 (limits).
+404 (no such room), 409 (a `PATCH` whose `mix` touches a channel another member holds, or a `claim` of one, `{error: "someone is adjusting that"}`; see "Channel claims"), 429 (limits).
 
 ## SSE events
 
@@ -420,3 +423,37 @@ hosts, even when joins, role changes and leaves arrive at the same moment.
 Promotions are ordered by a counter shared by the whole server, not by
 `promotedAt`, so two promotions in the same millisecond still have a fixed
 order.
+
+### Channel claims
+
+A sound channel's slider and on/off switch both change `settings.mix[channel]`.
+So that two owners cannot drag the same control at once, a host or co-host
+claims a channel first and the server refuses everyone else until the claim
+ends. `Room.claims` shows who holds what.
+
+- `POST /rooms/{id}/claim {channel}` (host or co-host; guests get 403;
+  `channel` is 1 to 32 characters, else 400). If the channel is unclaimed, its
+  claim has expired or the caller already holds it, the caller holds it until 5
+  seconds from now and gets 200 with the `Room`. If another member holds an
+  unexpired claim it is 409 `someone is adjusting that` and nothing changes.
+  First come, first served: the host does not outrank a co-host.
+- `POST /rooms/{id}/release {channel}` removes the caller's claim. Releasing a
+  channel the caller does not hold is a no-op; it is always 200 for a member.
+- A `PATCH` whose `settings.mix` names a channel held by another member is 409
+  as a whole: nothing in it is applied, including a timer or other settings in
+  the same body. A mix entry for a channel the caller holds renews that claim to
+  5 seconds from now. Channels nobody holds can be patched freely.
+- Claims are checked and changed under the same lock as the settings merge, so
+  of two simultaneous claims exactly one wins.
+- A claim is absent once its expiry has passed, everywhere: a new claim by
+  someone else succeeds, and views omit it. The server also removes expired
+  claims at least once a second and sends a `room` event when it does, so other
+  clients un-grey promptly. Whoever claims next after an expiry holds it.
+- A claim ends on release, 5 seconds after its last use, when the holder leaves,
+  is removed after the disconnect grace, is demoted to guest, or the room is
+  deleted. A login handover drops the old device's claims; the new device
+  holds none. A co-host promoted to host by succession keeps theirs.
+- Why an expiry: a client that vanishes mid-drag (closed tab, lost connection)
+  never sends a release, and without a deadline the channel would stay locked.
+  A client holding a slider renews every 2 seconds; renewals are ordinary
+  commands and count toward the per-token limit.
