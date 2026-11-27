@@ -116,7 +116,7 @@
 
   function status(state: TimerState): string {
     const v = snapshot(state, now + store.clockOffset);
-    if (v.phase === 'done') return 'Done';
+    if (v.phase === 'done') return 'Timer done';
     if (!v.running) return 'Paused';
     const clock = formatClock(v.phaseRemainingMs);
     if (v.phase === 'break') return `On a break · ${clock}`;

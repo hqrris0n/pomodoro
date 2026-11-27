@@ -93,6 +93,19 @@ describe('ClocksMenu', () => {
     expect(screen.getByText('On a break · 04:00')).toBeInTheDocument();
   });
 
+  it('shows Timer done for a room whose timer has finished', () => {
+    const finished: RoomSummary = {
+      id: 'd',
+      ownerName: 'Espresso Wren',
+      memberCount: 1,
+      drinkId: 'x',
+      timer: t(25 * 60_000 + 1, false),
+    };
+    openMenu(fake({ list: [finished] }));
+    expect(screen.getByText('Espresso Wren')).toBeInTheDocument();
+    expect(screen.getByText('Timer done')).toBeInTheDocument();
+  });
+
   it('shows the empty state', () => {
     openMenu(fake({ list: [] }));
     expect(screen.getByText('Nobody else is brewing right now.')).toBeInTheDocument();
