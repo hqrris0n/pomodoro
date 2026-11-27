@@ -16,6 +16,8 @@ export type Room = {
   timer: TimerState | null;
   timerRev?: number;
   members: Member[];
+  /** Channel id -> id of the member adjusting it (unexpired claims only). */
+  claims?: Record<string, string>;
 };
 /** A room someone can follow: one with a timer. */
 export type RoomSummary = {
@@ -95,6 +97,14 @@ export function setRole(
   return call(token, 'POST', `/rooms/${id(roomId)}/role`, { memberId, role });
 }
 
+export function claimChannel(token: string, roomId: string, channel: string): Promise<Room> {
+  return call(token, 'POST', `/rooms/${id(roomId)}/claim`, { channel });
+}
+
+export function releaseChannel(token: string, roomId: string, channel: string): Promise<Room> {
+  return call(token, 'POST', `/rooms/${id(roomId)}/release`, { channel });
+}
+
 export function rename(token: string, name: string): Promise<Record<string, never>> {
   return call(token, 'PUT', '/me', { name });
 }
@@ -113,6 +123,8 @@ export type RoomsApi = {
   leaveRoom: typeof leaveRoom;
   patchRoom: typeof patchRoom;
   setRole: typeof setRole;
+  claimChannel: typeof claimChannel;
+  releaseChannel: typeof releaseChannel;
   rename: typeof rename;
   sendNote: typeof sendNote;
 };

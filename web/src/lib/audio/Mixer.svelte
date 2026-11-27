@@ -1,9 +1,121 @@
 <script lang="ts">
-  import { onMount, tick } from 'svelte';
+  import { onDestroy, onMount, tick } from 'svelte';
+  import { SvelteSet } from 'svelte/reactivity';
   import { scenes } from '../backgrounds/registry';
   import { sound } from './mixes.svelte';
 
-  let { disabled = false, lockedNote }: { disabled?: boolean; lockedNote?: string } = $props();
+  let {
+    disabled = false,
+    lockedNote,
+    heldByOther = () => false,
+    mixesHeld = false,
+    canAskWhy = false,
+    onclaim,
+    onrelease,
+  }: {
+    disabled?: boolean;
+    lockedNote?: string;
+    /** True while someone else is adjusting this channel: its controls are greyed out. */
+    heldByOther?: (channelId: string) => boolean;
+    /** True while someone else is adjusting any channel: saved mixes cannot be loaded. */
+    mixesHeld?: boolean;
+    /** Show "Someone is adjusting." on hover or tap of a greyed-out control. */
+    canAskWhy?: boolean;
+    /** The user started adjusting a channel (press or focus). Called again freely. */
+    onclaim?: (channelId: string) => void;
+    /** The user stopped adjusting a channel (release or blur). */
+    onrelease?: (channelId: string) => void;
+  } = $props();
+
+  // ---- who is adjusting what ----
+  const HOVER_MS = 500;
+  const TAP_MS = 2000;
+  const WHY = 'Someone is adjusting.';
+  let tip = $state<string | null>(null);
+  let tipTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function clearTip() {
+    if (tipTimer) clearTimeout(tipTimer);
+    tipTimer = null;
+    tip = null;
+  }
+
+  /** Hover (not touch) on a greyed-out area shows the tooltip after a delay. */
+  function onHoverIn(key: string, held: boolean, e: PointerEvent) {
+    if (!held || !canAskWhy || e.pointerType === 'touch') return;
+    if (tipTimer) clearTimeout(tipTimer);
+    tipTimer = setTimeout(() => {
+      tip = key;
+      tipTimer = null;
+    }, HOVER_MS);
+  }
+
+  /** A tap on a greyed-out area shows the tooltip for a moment. */
+  function onTap(key: string, held: boolean, e: PointerEvent) {
+    if (!held || !canAskWhy || e.pointerType === 'mouse') return;
+    if (tipTimer) clearTimeout(tipTimer);
+    tip = key;
+    tipTimer = setTimeout(() => (tip = null), TAP_MS);
+  }
+
+  onDestroy(() => {
+    if (tipTimer) clearTimeout(tipTimer);
+  });
+
+  // Channels I have pressed or focused. Pressing claims; releasing the pointer or
+  // leaving the control ends it (a moment later, so the click that follows a
+  // press still counts as part of the adjustment).
+  const pressed = new SvelteSet<string>();
+  const focused = new SvelteSet<string>();
+
+  function engage(id: string) {
+    if (disabled || heldByOther(id)) return;
+    onclaim?.(id);
+  }
+
+  function settle(id: string) {
+    setTimeout(() => {
+      if (!pressed.has(id) && !focused.has(id)) onrelease?.(id);
+    }, 0);
+  }
+
+  function onChannelDown(id: string) {
+    if (disabled || heldByOther(id)) return;
+    pressed.add(id);
+    engage(id);
+    const up = () => {
+      window.removeEventListener('pointerup', up);
+      window.removeEventListener('pointercancel', up);
+      pressed.delete(id);
+      // After a press the control keeps focus; the claim still ends with the press.
+      focused.delete(id);
+      settle(id);
+    };
+    window.addEventListener('pointerup', up);
+    window.addEventListener('pointercancel', up);
+  }
+
+  function onChannelFocus(id: string) {
+    if (disabled || heldByOther(id)) return;
+    focused.add(id);
+    engage(id);
+  }
+
+  function onChannelBlur(id: string, e: FocusEvent) {
+    if ((e.currentTarget as HTMLElement).contains(e.relatedTarget as Node | null)) return;
+    focused.delete(id);
+    settle(id);
+  }
+
+  function onChannelKey(id: string) {
+    // Keyboard use after a press ended: claim again.
+    focused.add(id);
+    engage(id);
+  }
+
+  onDestroy(() => {
+    for (const id of new Set([...pressed, ...focused])) onrelease?.(id);
+  });
 
   // In a room, non-hosts see the host's list: they can load and add mixes, never change them.
   let manageOff = $derived(disabled || sound.roomMixes !== null);
@@ -192,8 +304,19 @@
     <p class="note">{lockedNote}</p>
   {/if}
 
-  <div class="group" bind:this={list}>
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div
+    class="group held-area"
+    class:held={mixesHeld}
+    bind:this={list}
+    onpointerenter={(e) => onHoverIn('mixes', mixesHeld, e)}
+    onpointerleave={clearTip}
+    onpointerdown={(e) => onTap('mixes', mixesHeld, e)}
+  >
     <h3>Mixes</h3>
+    {#if tip === 'mixes' && mixesHeld}
+      <p class="tip" role="tooltip" id="tip-mixes">{WHY}</p>
+    {/if}
     <ul class="mixes">
       {#each sound.saved as m (m.id)}
         <li class:editing={renamingId === m.id}>
@@ -245,7 +368,8 @@
                 type="button"
                 class="btn has-icons"
                 aria-pressed={sound.activeSavedId === m.id}
-                {disabled}
+                aria-describedby={tip === 'mixes' && mixesHeld ? 'tip-mixes' : undefined}
+                disabled={disabled || mixesHeld}
                 onclick={() => sound.loadSaved(m.id)}
               >
                 {m.name}
@@ -344,13 +468,33 @@
         {#each sound.channels as c (c.id)}
           {@const v = pct(c.id)}
           {@const on = isOn(c.id)}
-          <li class:off={!on}>
+          {@const held = heldByOther(c.id)}
+          {@const key = `ch:${c.id}`}
+          <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+          <li
+            class:off={!on}
+            class:held-area={true}
+            class:held
+            onpointerenter={(e) => onHoverIn(key, held, e)}
+            onpointerleave={clearTip}
+            onpointerdown={(e) => {
+              onTap(key, held, e);
+              onChannelDown(c.id);
+            }}
+            onfocusin={() => onChannelFocus(c.id)}
+            onfocusout={(e) => onChannelBlur(c.id, e)}
+            onkeydown={() => onChannelKey(c.id)}
+          >
+            {#if tip === key && held}
+              <p class="tip" role="tooltip" id={`tip-${c.id}`}>{WHY}</p>
+            {/if}
             <label class="switch small">
               <input
                 type="checkbox"
                 checked={on}
                 aria-label={`Play ${c.name}`}
-                {disabled}
+                aria-describedby={tip === key && held ? `tip-${c.id}` : undefined}
+                disabled={disabled || held}
                 onchange={(e) => sound.setChannelOn(c.id, e.currentTarget.checked)}
               />
               <span class="track" aria-hidden="true"><span class="knob"></span></span>
@@ -366,7 +510,8 @@
                 style:--fill={fill(v)}
                 aria-label={c.name}
                 aria-valuetext={valueText(on ? v : 0)}
-                disabled={disabled || !on}
+                aria-describedby={tip === key && held ? `tip-${c.id}` : undefined}
+                disabled={disabled || held || !on}
                 oninput={(e) => onVolume(c.id, e)}
               />
             </label>
@@ -790,6 +935,32 @@
     display: flex;
     align-items: center;
     gap: var(--s2);
+  }
+
+  /* Someone else is adjusting: disabled controls pass pointer events to the row,
+     which owns the hover and tap tooltip. */
+  .held-area {
+    position: relative;
+  }
+
+  .held-area.held :is(input, .chip .btn) {
+    pointer-events: none;
+  }
+
+  .tip {
+    position: absolute;
+    top: 0;
+    right: 0;
+    z-index: 2;
+    margin: 0;
+    padding: var(--s1) var(--s2);
+    font-size: var(--t1);
+    line-height: 1.1;
+    color: var(--ink);
+    background: var(--white);
+    border: var(--border);
+    box-shadow: var(--shadow);
+    pointer-events: none;
   }
 
   .switch.small .track {

@@ -31,7 +31,7 @@ function resetStore() {
   sound.setRoomMixes(null);
 }
 
-async function setup(props: { disabled?: boolean; lockedNote?: string } = {}, fetchOk = true) {
+async function setup(props: Record<string, unknown> = {}, fetchOk = true) {
   stubFetch(fetchOk);
   render(Mixer, { props });
   if (fetchOk) await screen.findByRole('slider', { name: 'Rain' });
@@ -242,5 +242,79 @@ describe('Mixer', () => {
     await setup({}, false);
     expect(await screen.findByText(/Couldn't load the sounds/)).toBeInTheDocument();
     expect(screen.queryByRole('slider', { name: 'Rain' })).toBeNull();
+  });
+
+  it('claims a channel on focus and releases it on blur', async () => {
+    const onclaim = vi.fn();
+    const onrelease = vi.fn();
+    await setup({ onclaim, onrelease });
+    await fireEvent.focusIn(slider('Rain'));
+    expect(onclaim).toHaveBeenCalledWith('rain');
+    await fireEvent.focusOut(slider('Rain'));
+    await vi.waitFor(() => expect(onrelease).toHaveBeenCalledWith('rain'));
+  });
+
+  describe('when someone else is adjusting', () => {
+    const rainHeld = (id: string) => id === 'rain';
+
+    it('greys out only the held channel', async () => {
+      await setup({ heldByOther: rainHeld });
+      expect(screen.getByRole('checkbox', { name: 'Play Rain' })).toBeDisabled();
+      expect(slider('Rain')).toBeDisabled();
+      expect(screen.getByRole('checkbox', { name: 'Play Chatter' })).toBeEnabled();
+    });
+
+    it('greys out the mixes while any channel is held, and no longer after', async () => {
+      stubFetch();
+      const { rerender } = render(Mixer, { props: { mixesHeld: true } });
+      await screen.findByRole('slider', { name: 'Rain' });
+      const mix = PRESETS[0].name;
+      expect(screen.getByRole('button', { name: mix })).toBeDisabled();
+      await rerender({ mixesHeld: false });
+      expect(screen.getByRole('button', { name: mix })).toBeEnabled();
+    });
+
+    it('shows the tooltip after 500 ms of hover for a host, and hides it on leave', async () => {
+      vi.useFakeTimers();
+      try {
+        await setup({ heldByOther: rainHeld, canAskWhy: true });
+        const row = slider('Rain').closest('li')!;
+        await fireEvent.pointerEnter(row);
+        vi.advanceTimersByTime(400);
+        expect(screen.queryByRole('tooltip')).toBeNull();
+        vi.advanceTimersByTime(100);
+        await Promise.resolve();
+        expect(await screen.findByRole('tooltip')).toHaveTextContent('Someone is adjusting.');
+        await fireEvent.pointerLeave(row);
+        expect(screen.queryByRole('tooltip')).toBeNull();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('shows the tooltip on the mixes too', async () => {
+      vi.useFakeTimers();
+      try {
+        await setup({ mixesHeld: true, canAskWhy: true });
+        await fireEvent.pointerEnter(screen.getByRole('heading', { name: 'Mixes' }).parentElement!);
+        vi.advanceTimersByTime(500);
+        expect(await screen.findByRole('tooltip')).toHaveTextContent('Someone is adjusting.');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('never shows the tooltip to a guest', async () => {
+      vi.useFakeTimers();
+      try {
+        await setup({ disabled: true, heldByOther: rainHeld, mixesHeld: true, canAskWhy: false });
+        await fireEvent.pointerEnter(slider('Rain').closest('li')!);
+        vi.advanceTimersByTime(1000);
+        await Promise.resolve();
+        expect(screen.queryByRole('tooltip')).toBeNull();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 });

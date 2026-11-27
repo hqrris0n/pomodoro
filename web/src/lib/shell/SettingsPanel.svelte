@@ -4,6 +4,7 @@
   import Mixer from '../audio/Mixer.svelte';
   import { clock } from '../clock/clock.svelte';
   import { profiles } from '../profiles/profiles.svelte';
+  import { rooms } from '../rooms/rooms.svelte';
   import { identity, randomName } from './identity.svelte';
   import IconClose from './icons/IconClose.svelte';
   import IconDice from './icons/IconDice.svelte';
@@ -179,7 +180,15 @@
 
     <section aria-labelledby="sounds-heading">
       <h3 id="sounds-heading">Sounds</h3>
-      <Mixer disabled={locked} {lockedNote} />
+      <Mixer
+        disabled={locked}
+        {lockedNote}
+        heldByOther={(id) => rooms.heldByOther(id)}
+        mixesHeld={rooms.anyHeldByOther}
+        canAskWhy={rooms.canControl}
+        onclaim={(id) => rooms.startAdjusting(id)}
+        onrelease={(id) => void rooms.stopAdjusting(id)}
+      />
     </section>
 
     <section aria-labelledby="background-heading">

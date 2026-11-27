@@ -414,6 +414,14 @@ reach the server in.
   the room. While the room has no timer they see a waiting screen with a
   Leave button and cannot order; the next timer takes over automatically.
   Rooms with no timer are not offered in the list of timers to join.
+- Sound channels (host and co-host): pressing or focusing a channel's slider or switch
+  claims it (`POST /claim`, once); releasing the pointer or leaving the control sends
+  any pending settings patch and then `POST /release`. While held, the claim is renewed
+  every 2 seconds. A refused claim or renewal (409) puts the channel back to the room's
+  value without an error message. A channel claimed by another member, and every saved
+  mix while any channel is, is greyed out like a guest's controls; hovering it for
+  500 ms (or tapping it, for 2 s) shows "Someone is adjusting." to host and co-hosts
+  only. Solo and guests send no claims.
 - If the server is unreachable the app behaves as a solo timer and retries
   the stream with backoff (2s doubling to 30s).
 
@@ -428,14 +436,6 @@ server merges them under its lock: changes to different fields, or to different
 mix channels, all survive. Only when two people change the same field or the
 same channel does the request the server handles last win.
 
-### Host succession
-
-Two queues decide who hosts next: co-hosts in the order they were promoted,
-then guests in the order they joined. The choice is made inside the same
-locked step that removes the leaving host, so a room never has zero or two
-hosts, even when joins, role changes and leaves arrive at the same moment.
-Promotions are ordered by a counter shared by the whole server, not by
-`promotedAt`, so two promotions in the same millisecond still have a fixed
 ### Timer commands
 
 Pause, resume and skip break used to be sent as a whole timer that the client
@@ -456,6 +456,14 @@ would freeze the fresh timer; with it the pause is refused, the co-host's client
 adopts the restarted timer from the 409 body, and the restart stands whichever
 request the server handles first.
 
+### Host succession
+
+Two queues decide who hosts next: co-hosts in the order they were promoted,
+then guests in the order they joined. The choice is made inside the same
+locked step that removes the leaving host, so a room never has zero or two
+hosts, even when joins, role changes and leaves arrive at the same moment.
+Promotions are ordered by a counter shared by the whole server, not by
+`promotedAt`, so two promotions in the same millisecond still have a fixed
 order.
 
 ### Channel claims

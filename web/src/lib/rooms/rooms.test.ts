@@ -55,6 +55,7 @@ const mkRoom = (over: Partial<Room> = {}): Room => ({
   timer: TIMER,
   timerRev: 1,
   members: [member('me', 'host', 1)],
+  claims: {},
   ...over,
 });
 
@@ -69,6 +70,8 @@ function setup() {
     leaveRoom: vi.fn(async () => ({})),
     patchRoom: vi.fn(async () => mkRoom()),
     setRole: vi.fn(async () => mkRoom()),
+    claimChannel: vi.fn(async () => mkRoom()),
+    releaseChannel: vi.fn(async () => mkRoom()),
     rename: vi.fn(async () => ({})),
     sendNote: vi.fn(async () => ({ id: 'n1' })),
   };
@@ -907,5 +910,127 @@ describe("sharing the host's saved mixes", () => {
       'Rainy day',
       'Host mix',
     ]);
+  });
+});
+
+describe('channel claims', () => {
+  const view = (role: Member['role'], over: Partial<Room> = {}) =>
+    mkRoom({
+      id: 'other',
+      members: [member('o', 'host', 1), member('me', role, 2)],
+      ...over,
+    });
+  const emit = (room: Room) => {
+    h.es().emit('room', { now: Date.now(), you: 'me', room });
+    flushSync();
+  };
+  const asCohost = async () => {
+    await h.asHost();
+    emit(view('cohost'));
+  };
+
+  it('claims once on start, and sends the pending patch before releasing', async () => {
+    await h.asHost();
+    h.rooms.startAdjusting('rain');
+    h.rooms.startAdjusting('rain');
+    await h.settle();
+    expect(h.api.claimChannel).toHaveBeenCalledOnce();
+    expect(h.api.claimChannel).toHaveBeenCalledWith(h.identity.token, 'r1', 'rain');
+
+    h.sound.setVolume('rain', 0.9);
+    flushSync();
+    void h.rooms.stopAdjusting('rain');
+    await h.settle();
+    expect(h.api.patchRoom).toHaveBeenCalledOnce();
+    expect(h.api.releaseChannel).toHaveBeenCalledWith(h.identity.token, 'r1', 'rain');
+    expect(h.api.patchRoom.mock.invocationCallOrder[0]).toBeLessThan(
+      h.api.releaseChannel.mock.invocationCallOrder[0],
+    );
+    expect((h.api.patchRoom.mock.calls[0] as unknown[])[2]).toEqual({
+      settings: { mix: { rain: 0.9 } },
+    });
+  });
+
+  it('renews every 2 seconds while held, and stops on release', async () => {
+    await h.asHost();
+    h.rooms.startAdjusting('rain');
+    await vi.advanceTimersByTimeAsync(4100);
+    expect(h.api.claimChannel).toHaveBeenCalledTimes(3);
+    await h.rooms.stopAdjusting('rain');
+    await vi.advanceTimersByTimeAsync(6000);
+    expect(h.api.claimChannel).toHaveBeenCalledTimes(3);
+  });
+
+  it('stops renewing when I am demoted to guest', async () => {
+    await asCohost();
+    h.rooms.startAdjusting('rain');
+    await vi.advanceTimersByTimeAsync(2100);
+    expect(h.api.claimChannel).toHaveBeenCalledTimes(2);
+    emit(view('guest'));
+    await vi.advanceTimersByTimeAsync(6000);
+    expect(h.api.claimChannel).toHaveBeenCalledTimes(2);
+  });
+
+  it('puts the room value back, quietly, when a claim is refused', async () => {
+    await h.asHost();
+    h.api.claimChannel.mockRejectedValueOnce(new ApiError(409, 'someone is adjusting that'));
+    h.rooms.startAdjusting('rain');
+    h.sound.setVolume('rain', 0.9);
+    flushSync();
+    await h.settle();
+    expect(h.sound.mix.rain).toBe(0.5);
+    expect(h.rooms.error).toBeNull();
+    await vi.advanceTimersByTimeAsync(6000);
+    expect(h.api.claimChannel).toHaveBeenCalledOnce();
+    expect(h.api.patchRoom).not.toHaveBeenCalled();
+    await h.rooms.stopAdjusting('rain');
+    expect(h.api.releaseChannel).not.toHaveBeenCalled();
+  });
+
+  it('restores the room value when a renewal is refused', async () => {
+    await h.asHost();
+    h.rooms.startAdjusting('rain');
+    await h.settle();
+    h.api.claimChannel.mockRejectedValueOnce(new ApiError(409, 'someone is adjusting that'));
+    h.sound.setVolume('rain', 0.9);
+    flushSync();
+    await vi.advanceTimersByTimeAsync(2100);
+    expect(h.sound.mix.rain).toBe(0.5);
+    await vi.advanceTimersByTimeAsync(6000);
+    expect(h.api.claimChannel).toHaveBeenCalledTimes(2);
+  });
+
+  it('ignores a refused settings patch quietly', async () => {
+    await h.asHost();
+    h.api.patchRoom.mockRejectedValueOnce(new ApiError(409, 'someone is adjusting that'));
+    h.sound.setVolume('rain', 0.9);
+    flushSync();
+    await vi.advanceTimersByTimeAsync(300);
+    expect(h.api.patchRoom).toHaveBeenCalledOnce();
+    expect(h.rooms.error).toBeNull();
+  });
+
+  it('reports which channels another member holds, never mine', async () => {
+    await asCohost();
+    emit(view('cohost', { claims: { rain: 'o', hum: 'me' } }));
+    expect(h.rooms.heldByOther('rain')).toBe(true);
+    expect(h.rooms.heldByOther('hum')).toBe(false);
+    expect(h.rooms.heldByOther('fire')).toBe(false);
+    expect(h.rooms.anyHeldByOther).toBe(true);
+    emit(view('cohost', { claims: { hum: 'me' } }));
+    expect(h.rooms.anyHeldByOther).toBe(false);
+  });
+
+  it('sends no claims when solo or as a guest', async () => {
+    h.rooms.startAdjusting('rain');
+    await h.connect();
+    h.rooms.startAdjusting('rain');
+    await h.startTimer();
+    emit(view('guest'));
+    h.rooms.startAdjusting('rain');
+    await h.rooms.stopAdjusting('rain');
+    await vi.advanceTimersByTimeAsync(6000);
+    expect(h.api.claimChannel).not.toHaveBeenCalled();
+    expect(h.api.releaseChannel).not.toHaveBeenCalled();
   });
 });

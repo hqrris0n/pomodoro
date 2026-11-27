@@ -1,4 +1,5 @@
 import { flushSync, untrack } from 'svelte';
+import { SvelteMap } from 'svelte/reactivity';
 import { backgrounds } from '../backgrounds/backgrounds.svelte';
 import { drinks } from '../drinks/drinks.svelte';
 import { sound } from '../audio/mixes.svelte';
@@ -21,6 +22,7 @@ import {
 
 const SNAPSHOT_KEY = 'ownSettings';
 const DEBOUNCE_MS = 300;
+const RENEW_MS = 2000;
 const RETRY_MIN_MS = 2000;
 const RETRY_MAX_MS = 30_000;
 
@@ -152,6 +154,16 @@ export class RoomsStore {
   );
   /** Host and co-hosts drive the timer and settings; guests only follow. */
   #controls = $derived(this.role === 'host' || this.role === 'cohost');
+  /** Channel claims in the latest room view: channel id -> member id. */
+  claims = $derived<Record<string, string>>(this.room?.claims ?? {});
+  /** True while another member is adjusting any sound channel. */
+  anyHeldByOther = $derived(Object.values(this.claims).some((m) => m !== this.me));
+
+  /** Channels I am adjusting: the claim request, and the timer that renews it. */
+  #holds = new SvelteMap<
+    string,
+    { roomId: string; claimed: Promise<boolean>; renew: ReturnType<typeof setInterval> }
+  >();
 
   #d: RoomsDeps;
   #es: EventSource | null = null;
@@ -180,6 +192,17 @@ export class RoomsStore {
     this.#d = deps;
   }
 
+  /** True when another member holds `channel` in the latest room view. */
+  heldByOther(channel: string): boolean {
+    const holder = this.claims[channel];
+    return holder !== undefined && holder !== this.me;
+  }
+
+  /** True for host and co-host: the people who can be told why a control is greyed out. */
+  get canControl(): boolean {
+    return this.#controls;
+  }
+
   #now(): number {
     return (this.#d.now ?? Date.now)();
   }
@@ -206,6 +229,7 @@ export class RoomsStore {
         const next = this.#effective();
         untrack(() => {
           this.#onSettingsChanged(next);
+          this.#dropStaleHolds();
         });
       });
       $effect(() => {
@@ -234,6 +258,7 @@ export class RoomsStore {
       if (this.#debounce) clearTimeout(this.#debounce);
       if (this.#retryTimer) clearTimeout(this.#retryTimer);
       this.#debounce = this.#retryTimer = null;
+      this.#dropHolds();
       this.#es?.close();
       this.#es = null;
       this.online = false;
@@ -576,18 +601,94 @@ export class RoomsStore {
     if (this.#debounce) clearTimeout(this.#debounce);
     this.#debounce = setTimeout(() => {
       this.#debounce = null;
-      const room = this.room;
-      if (!this.#controls || !room) return;
-      const settings = this.#effective();
-      const patch = diffSettings(settings, this.#synced);
-      if (!patch) return;
-      this.#synced = settings;
-      if (this.role === 'host') {
-        this.#syncedMixes = settings.mixes;
-        this.#knownMixIds.push(...(settings.mixes ?? []).map((m) => m.id));
-      }
-      this.#d.api.patchRoom(this.#d.identity.token, room.id, { settings: patch }).catch(() => {});
+      void this.#sendSettings();
     }, DEBOUNCE_MS);
+  }
+
+  /** Send what differs from the server's settings now. A refusal is ignored; the next room event resyncs. */
+  async #sendSettings(): Promise<void> {
+    const room = this.room;
+    if (!this.#controls || !room) return;
+    const settings = this.#effective();
+    const patch = diffSettings(settings, this.#synced);
+    if (!patch) return;
+    this.#synced = settings;
+    if (this.role === 'host') {
+      this.#syncedMixes = settings.mixes;
+      this.#knownMixIds.push(...(settings.mixes ?? []).map((m) => m.id));
+    }
+    try {
+      await this.#d.api.patchRoom(this.#d.identity.token, room.id, { settings: patch });
+    } catch {
+      // 409: someone else holds a channel in it. Anything else: the next change resyncs.
+    }
+  }
+
+  // ---- channel claims -------------------------------------------------
+
+  /** Start adjusting `channel`: claim it, once, and renew the claim while it is held. */
+  startAdjusting(channel: string): void {
+    const room = this.room;
+    if (!this.#controls || !room || this.#holds.has(channel)) return;
+    const claimed = this.#claim(room.id, channel);
+    const renew = setInterval(() => {
+      this.#dropStaleHolds();
+      if (!this.#holds.has(channel)) return;
+      void this.#claim(room.id, channel);
+    }, RENEW_MS);
+    this.#holds.set(channel, { roomId: room.id, claimed, renew });
+  }
+
+  /** Claim or renew; on a refusal stop holding, restore the room's value and resolve false. */
+  async #claim(roomId: string, channel: string): Promise<boolean> {
+    const d = this.#d;
+    try {
+      await d.api.claimChannel(d.identity.token, roomId, channel);
+      return true;
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 409) this.#refused(roomId, channel);
+      return false;
+    }
+  }
+
+  #refused(roomId: string, channel: string) {
+    const hold = this.#holds.get(channel);
+    if (!hold || hold.roomId !== roomId) return;
+    clearInterval(hold.renew);
+    this.#holds.delete(channel);
+    const room = this.room;
+    if (!room || room.id !== roomId) return;
+    const d = this.#d;
+    const level = room.settings.mix[channel] ?? 0;
+    if ((d.sound.mix[channel] ?? 0) !== level)
+      d.sound.applyMix({ ...d.sound.mix, [channel]: level });
+  }
+
+  /** Done adjusting `channel`: send any pending change first, then release the claim. */
+  async stopAdjusting(channel: string): Promise<void> {
+    const d = this.#d;
+    const hold = this.#holds.get(channel);
+    if (!hold) return;
+    clearInterval(hold.renew);
+    this.#holds.delete(channel);
+    if (this.#debounce) clearTimeout(this.#debounce);
+    this.#debounce = null;
+    const [, held] = await Promise.all([this.#sendSettings(), hold.claimed]);
+    if (held) d.api.releaseChannel(d.identity.token, hold.roomId, channel).catch(() => {});
+  }
+
+  #dropHolds() {
+    for (const h of this.#holds.values()) clearInterval(h.renew);
+    this.#holds.clear();
+  }
+
+  /** Stop renewing claims I can no longer hold: I left the room, changed room or became a guest. */
+  #dropStaleHolds() {
+    for (const [channel, h] of this.#holds) {
+      if (this.#controls && this.room?.id === h.roomId) continue;
+      clearInterval(h.renew);
+      this.#holds.delete(channel);
+    }
   }
 
   #onVisible(visible: boolean) {
