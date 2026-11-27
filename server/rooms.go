@@ -607,6 +607,13 @@ func (h *hub) Patch(token, roomID string, s *settingsPatch, t *Timer, clearTimer
 				return Room{}, badRequest("mix may have at most 16 channels")
 			}
 		}
+		var appended []SavedMix
+		if s.AppendMixes != nil {
+			var err error
+			if appended, err = appendMixes(r.settings.Mixes, s.AppendMixes); err != nil {
+				return Room{}, err
+			}
+		}
 		// Everything is checked; apply.
 		if s.DrinkID != nil {
 			r.settings.DrinkID = *s.DrinkID
@@ -624,6 +631,9 @@ func (h *hub) Patch(token, roomID string, s *settingsPatch, t *Timer, clearTimer
 		if s.Mixes != nil {
 			r.settings.Mixes = s.Mixes
 		}
+		if appended != nil {
+			r.settings.Mixes = appended
+		}
 	}
 	if t != nil || clearTimer {
 		if clearTimer {
@@ -638,6 +648,35 @@ func (h *hub) Patch(token, roomID string, s *settingsPatch, t *Timer, clearTimer
 	h.touchAll(r)
 	h.publish()
 	return r.view(), nil
+}
+
+// appendMixes returns a new list of cur followed by add, in order. An entry
+// whose id is already in the list with the same name and mix is skipped; one
+// with the same id and other contents, or a result over the limit, is 400.
+// cur is not modified.
+func appendMixes(cur, add []SavedMix) ([]SavedMix, error) {
+	out := make([]SavedMix, len(cur), len(cur)+len(add))
+	copy(out, cur)
+	for _, m := range add {
+		dup := false
+		for _, e := range out {
+			if e.ID != m.ID {
+				continue
+			}
+			if !reflect.DeepEqual(e, m) {
+				return nil, badRequest("mix ids must be unique")
+			}
+			dup = true
+			break
+		}
+		if !dup {
+			out = append(out, m)
+		}
+	}
+	if len(out) > maxSavedMixes {
+		return nil, badRequest("mixes may have at most 40 entries")
+	}
+	return out, nil
 }
 
 // onlyAppends reports whether next is old with zero or more mixes added at the

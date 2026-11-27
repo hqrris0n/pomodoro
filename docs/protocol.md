@@ -112,7 +112,7 @@ In `PATCH`, `settings` is partial and every field is optional: `drinkId`,
 `backgroundId` and `backgroundRotateMin` are kept when absent and replaced
 (same validation as create) when present; `mix` is merged per channel, each key
 setting that channel's level, and a level of `0` removes the channel (absent
-channels are kept); `mixes` follows "Shared mixes". The merged mix may have at
+channels are kept); `mixes` and `appendMixes` follow "Shared mixes". The merged mix may have at
 most 16 channels, else 400 and nothing changes. `settings: {}` is accepted and
 changes nothing; a body with neither `settings` nor `timer` is 400. `POST
 /rooms` still takes the full settings. Responses and events carry the full
@@ -168,8 +168,17 @@ brings their own list back untouched.
   with new mixes added at the end: if any existing mix was removed, renamed,
   changed or moved, it is 403 and nothing changes. Co-hosts do not send
   `mixes` with their ordinary settings patches. Guests get 403 as usual.
+- `appendMixes` (host or co-host, 1 to 40 `SavedMix` entries, each validated
+  like a `mixes` entry) adds mixes without knowing the current list: the server
+  appends each entry, in order, to the room's list as it is when the request is
+  handled. An entry whose id is already in the list with the same name and mix
+  is skipped, so a retried request is harmless and still 200. An id already in
+  the list with a different name or mix is 400 `mix ids must be unique`; a
+  result of more than 40 entries is 400 `mixes may have at most 40 entries`;
+  either way nothing changes. `mixes` and `appendMixes` in the same patch is
+  400. Guests get 403.
 - Client: the host sends their own saved list on create and whenever it
-  changes. A co-host saving a mix sends the room list plus the new mix, and
+  changes. A co-host saving a mix sends `appendMixes: [mix]`, and
   rename, delete and background links are disabled for non-hosts. Background
   links are never shared.
 - Adoption: when the host's device sees a room view with mix ids it has never
@@ -439,6 +448,16 @@ same channel does the request the server handles last win.
 ### Timer commands
 
 Pause, resume and skip break used to be sent as a whole timer that the client
+### Saved mixes
+
+Two co-hosts saving a mix at the same moment used to each send the whole list
+plus their own mix, so whichever request the server handled second no longer
+matched the current list and was refused, losing that mix. A co-host now sends
+only the new mix as `appendMixes`, and the server appends it to the list as it
+is under its lock: both mixes end up in the list, once each, in the order the
+server handled them. A retry of the same entry is skipped rather than
+duplicated.
+
 had computed from its own clock. Two hosts pressing pause together then each
 stored their own arithmetic, and the later one won. They are now commands the
 server computes under its lock with its own clock, and each one says what to

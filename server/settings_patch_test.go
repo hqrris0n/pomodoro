@@ -84,3 +84,104 @@ func TestPatchSettingsKeepsMixes(t *testing.T) {
 		t.Fatalf("%v %+v", err, got.Settings)
 	}
 }
+
+func appendPatch(t *testing.T, ms ...SavedMix) *settingsPatch {
+	t.Helper()
+	v, err := validatePatch(settingsPatch{AppendMixes: ms})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &v
+}
+
+func mixIDs(r Room) string {
+	var ids []string
+	for _, m := range r.Settings.Mixes {
+		ids = append(ids, m.ID)
+	}
+	return strings.Join(ids, ",")
+}
+
+func TestPatchAppendMixes(t *testing.T) {
+	h, _ := newTestHub()
+	r := mustCreate(t, h, tok(1), "Ada")
+	mustJoin(t, h, tok(2), r.ID, "Bo")
+	mustJoin(t, h, tok(3), r.ID, "Cy")
+	if _, err := h.SetRole(tok(1), r.ID, memberID(tok(2)), roleCohost); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.Patch(tok(1), r.ID, &settingsPatch{Mixes: []SavedMix{mixOf("a", "A", 0.1)}}, nil, false); err != nil {
+		t.Fatal(err)
+	}
+
+	// Co-host and host append at the end.
+	got, err := h.Patch(tok(2), r.ID, appendPatch(t, mixOf("b", "B", 0.2)), nil, false)
+	if err != nil || mixIDs(got) != "a,b" {
+		t.Fatalf("cohost: %v %s", err, mixIDs(got))
+	}
+	got, err = h.Patch(tok(1), r.ID, appendPatch(t, mixOf("c", "C", 0.3), mixOf("d", "D", 0.4)), nil, false)
+	if err != nil || mixIDs(got) != "a,b,c,d" {
+		t.Fatalf("host: %v %s", err, mixIDs(got))
+	}
+
+	// A retry adds nothing and succeeds.
+	got, err = h.Patch(tok(2), r.ID, appendPatch(t, mixOf("b", "B", 0.2)), nil, false)
+	if err != nil || mixIDs(got) != "a,b,c,d" {
+		t.Fatalf("retry: %v %s", err, mixIDs(got))
+	}
+
+	// Same id with another name or mix is 400 and nothing changes, even when
+	// an earlier entry in the same request would have been added.
+	for _, bad := range []SavedMix{mixOf("b", "Other", 0.2), mixOf("b", "B", 0.9)} {
+		_, err = h.Patch(tok(2), r.ID, appendPatch(t, mixOf("e", "E", 0.5), bad), nil, false)
+		wantStatus(t, err, 400)
+	}
+	if cur, _ := h.room(r.ID); mixIDs(cur) != "a,b,c,d" {
+		t.Fatalf("changed after 400: %s", mixIDs(cur))
+	}
+
+	// Guests are refused.
+	_, err = h.Patch(tok(3), r.ID, appendPatch(t, mixOf("z", "Z", 0.1)), nil, false)
+	wantStatus(t, err, 403)
+
+	// Over 40 entries is 400 and nothing changes.
+	var many []SavedMix
+	for i := range 36 {
+		many = append(many, mixOf(fmt.Sprintf("m%d", i), "M", 0.1))
+	}
+	if _, err = h.Patch(tok(1), r.ID, appendPatch(t, many...), nil, false); err != nil {
+		t.Fatal(err)
+	}
+	_, err = h.Patch(tok(2), r.ID, appendPatch(t, mixOf("over", "Over", 0.1)), nil, false)
+	wantStatus(t, err, 400)
+	if cur, _ := h.room(r.ID); len(cur.Settings.Mixes) != 40 {
+		t.Fatalf("len %d", len(cur.Settings.Mixes))
+	}
+}
+
+func TestValidateAppendMixes(t *testing.T) {
+	ok := mixOf("a", "A", 0.1)
+	long := strings.Repeat("x", 41)
+	var fortyOne []SavedMix
+	for i := range 41 {
+		fortyOne = append(fortyOne, mixOf(fmt.Sprint(i), "M", 0.1))
+	}
+	bad := map[string]settingsPatch{
+		"both":       {Mixes: []SavedMix{ok}, AppendMixes: []SavedMix{mixOf("b", "B", 0.1)}},
+		"empty":      {AppendMixes: []SavedMix{}},
+		"too many":   {AppendMixes: fortyOne},
+		"empty id":   {AppendMixes: []SavedMix{mixOf("", "A", 0.1)}},
+		"long id":    {AppendMixes: []SavedMix{mixOf(long, "A", 0.1)}},
+		"empty name": {AppendMixes: []SavedMix{mixOf("a", "", 0.1)}},
+		"long name":  {AppendMixes: []SavedMix{mixOf("a", strings.Repeat("n", 31), 0.1)}},
+		"bad mix":    {AppendMixes: []SavedMix{{ID: "a", Name: "A", Mix: map[string]float64{"rain": 2}}}},
+	}
+	for name, p := range bad {
+		_, err := validatePatch(p)
+		if err == nil {
+			t.Errorf("%s: want 400", name)
+			continue
+		}
+		wantStatus(t, err, 400)
+	}
+}

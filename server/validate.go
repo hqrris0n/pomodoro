@@ -36,6 +36,9 @@ type settingsPatch struct {
 	BackgroundRotateMin *int               `json:"backgroundRotateMin"`
 	Mix                 map[string]float64 `json:"mix"`
 	Mixes               []SavedMix         `json:"mixes"`
+	// AppendMixes are mixes to add at the end of the room's current list, 1 to
+	// 40 entries when present; it cannot be combined with Mixes.
+	AppendMixes []SavedMix `json:"appendMixes"`
 }
 
 // SavedMix is one entry of the host's saved list.
@@ -165,22 +168,35 @@ func validateSettings(in Settings) (Settings, error) {
 		seen := make(map[string]bool, len(in.Mixes))
 		out := make([]SavedMix, 0, len(in.Mixes))
 		for _, m := range in.Mixes {
-			if n := utf8.RuneCountInString(m.ID); n < 1 || n > maxMixIDLen || seen[m.ID] {
+			if seen[m.ID] {
 				return Settings{}, badRequest("mix ids must be unique and 1 to 40 characters")
 			}
 			seen[m.ID] = true
-			if n := utf8.RuneCountInString(m.Name); n < 1 || n > maxMixNameLen {
-				return Settings{}, badRequest("mix names must be 1 to 30 characters")
-			}
-			mm, err := validateMix(m.Mix)
+			v, err := validateSavedMix(m)
 			if err != nil {
 				return Settings{}, err
 			}
-			out = append(out, SavedMix{ID: m.ID, Name: m.Name, Mix: mm})
+			out = append(out, v)
 		}
 		in.Mixes = out
 	}
 	return in, nil
+}
+
+// validateSavedMix checks one saved mix's id, name and channels and returns a
+// copy with a non-nil mix.
+func validateSavedMix(m SavedMix) (SavedMix, error) {
+	if n := utf8.RuneCountInString(m.ID); n < 1 || n > maxMixIDLen {
+		return SavedMix{}, badRequest("mix ids must be unique and 1 to 40 characters")
+	}
+	if n := utf8.RuneCountInString(m.Name); n < 1 || n > maxMixNameLen {
+		return SavedMix{}, badRequest("mix names must be 1 to 30 characters")
+	}
+	mm, err := validateMix(m.Mix)
+	if err != nil {
+		return SavedMix{}, err
+	}
+	return SavedMix{ID: m.ID, Name: m.Name, Mix: mm}, nil
 }
 
 // validatePatch checks the parts of a settings patch that are present, with the
@@ -198,6 +214,23 @@ func validatePatch(in settingsPatch) (settingsPatch, error) {
 	}
 	s.Mix = in.Mix
 	s.Mixes = in.Mixes
+	if in.AppendMixes != nil {
+		if in.Mixes != nil {
+			return settingsPatch{}, badRequest("mixes and appendMixes cannot be sent together")
+		}
+		if n := len(in.AppendMixes); n < 1 || n > maxSavedMixes {
+			return settingsPatch{}, badRequest("appendMixes must have 1 to 40 entries")
+		}
+		out := make([]SavedMix, 0, len(in.AppendMixes))
+		for _, m := range in.AppendMixes {
+			v, err := validateSavedMix(m)
+			if err != nil {
+				return settingsPatch{}, err
+			}
+			out = append(out, v)
+		}
+		in.AppendMixes = out
+	}
 	v, err := validateSettings(s)
 	if err != nil {
 		return settingsPatch{}, err
