@@ -94,6 +94,7 @@ room at all.
 | `POST /rooms/{id}/join`       | anyone  | `{name}`                          | Leaves any current room, joins as guest. Returns `Room`. |
 | `POST /rooms/{id}/leave`      | member  | —                                 | Leaves. |
 | `PATCH /rooms/{id}`           | host, co-host | `{settings?, timer?}`             | `timer` is replaced; `timer: null` clears it (host only). `settings` is a partial object, merged into the room's (see below). |
+| `POST /rooms/{id}/timer`      | host, co-host | `{action, rev}`             | Pauses, resumes or skips the break of the current timer, computed by the server; see "Timer commands". 409 `{error: "the timer changed", room}` if `rev` is not the room's `timerRev`. Returns `Room`. |
 | `POST /rooms/{id}/role`       | host    | `{memberId, role}`                | Sets that member's role to `"cohost"` or `"guest"`. The host's own role cannot change (400); an unknown member is 404. |
 | `POST /rooms/{id}/claim`      | host, co-host | `{channel}`                 | Takes control of one sound channel, see "Channel claims". 409 if another member holds it. Returns `Room`. |
 | `POST /rooms/{id}/release`    | member  | `{channel}`                       | Releases the caller's claim on that channel; anything else is a no-op. Returns `Room`. |
@@ -116,6 +117,19 @@ most 16 channels, else 400 and nothing changes. `settings: {}` is accepted and
 changes nothing; a body with neither `settings` nor `timer` is 400. `POST
 /rooms` still takes the full settings. Responses and events carry the full
 settings.
+
+`POST /rooms/{id}/timer` takes `action` (`"pause"`, `"resume"` or `"skipBreak"`)
+and `rev`, the `timerRev` the client last saw; either one missing or invalid is
+400. The server applies the action with its own clock `now`, so clients send no
+elapsed time. Each action is idempotent: `pause` on a paused timer, `resume` on
+a running or finished one, and `skipBreak` outside a break change nothing, still
+return 200 with the `Room` and publish no event. `pause` stores
+`min(elapsed(now), total)` and `anchorAt: null`; `resume` sets `anchorAt = now`;
+`skipBreak` moves `elapsedMs` to the start of the next focus round (a running
+timer stays running, a paused one stays paused). They never change `timerRev`.
+If the room has no timer or `rev` is stale the answer is 409
+`{error: "the timer changed", room}` with the current `Room`, which the client
+adopts. Starting a new timer, restarting and clearing still use `PATCH`.
 
 A missing `timer` keeps the timer and `"timer": null` clears it;
 `timerRev` changes only when the timer is replaced or cleared.
@@ -422,6 +436,26 @@ locked step that removes the leaving host, so a room never has zero or two
 hosts, even when joins, role changes and leaves arrive at the same moment.
 Promotions are ordered by a counter shared by the whole server, not by
 `promotedAt`, so two promotions in the same millisecond still have a fixed
+### Timer commands
+
+Pause, resume and skip break used to be sent as a whole timer that the client
+had computed from its own clock. Two hosts pressing pause together then each
+stored their own arithmetic, and the later one won. They are now commands the
+server computes under its lock with its own clock, and each one says what to
+reach (pause, not toggle), so repeating it or racing it with the same command
+changes nothing the second time: two pauses at once leave the timer paused once,
+and both callers get 200. Because these commands leave `timerRev` alone, they
+do not conflict with each other.
+
+Each command carries the `timerRev` the client last saw. The revision changes
+whenever the timer is replaced or cleared (a new order, a restart, clear), and a
+command aimed at a timer that has since been replaced is refused with 409 and
+the current room. For example, the host restarts the timer while a co-host,
+still looking at the old one, presses pause: without the check the stale pause
+would freeze the fresh timer; with it the pause is refused, the co-host's client
+adopts the restarted timer from the 409 body, and the restart stands whichever
+request the server handles first.
+
 order.
 
 ### Channel claims

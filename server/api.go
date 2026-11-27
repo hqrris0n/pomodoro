@@ -26,6 +26,7 @@ func newAPI(h *hub, p *profileStore, o apiOptions) http.Handler {
 	mux.HandleFunc("POST /api/rooms/{id}/leave", a.command(a.leave))
 	mux.HandleFunc("PATCH /api/rooms/{id}", a.commandLimit(maxSettingsLen, a.patch))
 	mux.HandleFunc("POST /api/rooms/{id}/role", a.command(a.setRole))
+	mux.HandleFunc("POST /api/rooms/{id}/timer", a.command(a.timerCommand))
 	mux.HandleFunc("POST /api/rooms/{id}/claim", a.command(a.claim))
 	mux.HandleFunc("POST /api/rooms/{id}/release", a.command(a.release))
 	mux.HandleFunc("POST /api/rooms/{id}/notes", a.command(a.note))
@@ -59,6 +60,11 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 }
 
 func writeErr(w http.ResponseWriter, err error) {
+	var tc *timerChanged
+	if errors.As(err, &tc) {
+		writeJSON(w, tc.status, map[string]any{"error": tc.msg, "room": tc.room})
+		return
+	}
 	var ae *apiError
 	if errors.As(err, &ae) {
 		writeJSON(w, ae.status, map[string]string{"error": ae.msg})
@@ -238,6 +244,28 @@ func (a *api) setRole(w http.ResponseWriter, r *http.Request, token string) erro
 		return err
 	}
 	room, err := a.h.SetRole(token, r.PathValue("id"), in.MemberID, in.Role)
+	if err != nil {
+		return err
+	}
+	writeJSON(w, 200, room)
+	return nil
+}
+
+func (a *api) timerCommand(w http.ResponseWriter, r *http.Request, token string) error {
+	var in struct {
+		Action string  `json:"action"`
+		Rev    *uint64 `json:"rev"`
+	}
+	if err := decode(r, &in); err != nil {
+		return err
+	}
+	if in.Action != timerPause && in.Action != timerResume && in.Action != timerSkipBreak {
+		return badRequest("action must be pause, resume or skipBreak")
+	}
+	if in.Rev == nil {
+		return badRequest("rev is required")
+	}
+	room, err := a.h.TimerCommand(token, r.PathValue("id"), in.Action, *in.Rev)
 	if err != nil {
 		return err
 	}
