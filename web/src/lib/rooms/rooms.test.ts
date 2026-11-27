@@ -905,12 +905,10 @@ describe("sharing the host's saved mixes", () => {
     expect(h.sound.saveCurrent('Study')).toBeNull();
     expect(h.api.patchRoom).toHaveBeenCalledOnce();
     expect((h.api.patchRoom.mock.calls[0] as unknown[])[2]).toEqual({
-      settings: { mixes: patchedSettings(0).mixes },
+      settings: {
+        appendMixes: [expect.objectContaining({ name: 'Study', mix: { chatter: 0.6 } })],
+      },
     });
-    const sent = patchedSettings(0).mixes!;
-    expect(sent.slice(0, 2)).toEqual(SHARED);
-    expect(sent).toHaveLength(3);
-    expect(sent[2]).toMatchObject({ name: 'Study', mix: { chatter: 0.6 } });
     expect(h.sound.saved.map((m) => m.name)).toEqual(['Rainy day', 'Host mix', 'Study']);
     expect(load('mixes', null)).toEqual(own);
     expect(h.sound.saveCurrent('study')).toBe('Another mix already has that name.');

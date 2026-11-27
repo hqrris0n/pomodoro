@@ -65,4 +65,8 @@ export type Settings = {
  * What a settings patch carries: only fields that changed. In `mix`, each key
  * sets that channel's level and 0 removes the channel; absent channels stay.
  */
-export type SettingsPatch = Partial<Omit<Settings, 'mix'>> & { mix?: Mix };
+export type SettingsPatch = Partial<Omit<Settings, 'mix'>> & {
+  mix?: Mix;
+  /** Co-host or host: mixes to add to the end of the room's list, see docs/protocol.md "Shared mixes". */
+  appendMixes?: SavedMix[];
+};

@@ -795,7 +795,7 @@ export class RoomsStore {
     const next = [...(d.sound.roomMixes ?? room.settings.mixes ?? []), mix];
     d.sound.setRoomMixes(next);
     d.api
-      .patchRoom(d.identity.token, room.id, { settings: { mixes: next } })
+      .patchRoom(d.identity.token, room.id, { settings: { appendMixes: [mix] } })
       .then((res) => {
         if (this.room?.id === room.id && this.role === 'cohost' && res.settings.mixes) {
           d.sound.setRoomMixes(res.settings.mixes);
