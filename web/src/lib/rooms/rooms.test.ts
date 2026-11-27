@@ -69,6 +69,7 @@ function setup() {
     ),
     leaveRoom: vi.fn(async () => ({})),
     patchRoom: vi.fn(async () => mkRoom()),
+    timerCommand: vi.fn(async () => mkRoom()),
     setRole: vi.fn(async () => mkRoom()),
     claimChannel: vi.fn(async () => mkRoom()),
     releaseChannel: vi.fn(async () => mkRoom()),
@@ -202,11 +203,29 @@ describe('publishing my timer', () => {
     expect(h.api.createRoom).toHaveBeenCalledOnce();
   });
 
-  it('patches the timer once when the owner pauses', async () => {
+  it('sends a pause, resume and skip break command, not a timer patch', async () => {
     await h.asHost();
     h.timer.pause();
-    expect(h.api.patchRoom).toHaveBeenCalledOnce();
-    expect(h.api.patchRoom).toHaveBeenCalledWith(h.identity.token, 'r1', { timer: h.timer.state });
+    await h.settle();
+    expect(h.api.timerCommand).toHaveBeenLastCalledWith(h.identity.token, 'r1', {
+      action: 'pause',
+      rev: 1,
+    });
+    h.timer.resume();
+    await h.settle();
+    expect(h.api.timerCommand).toHaveBeenLastCalledWith(h.identity.token, 'r1', {
+      action: 'resume',
+      rev: 1,
+    });
+    h.timer.apply({ ...TIMER, rounds: 2, elapsedMs: TIMER.focusMs + 1000, anchorAt: Date.now() });
+    h.timer.skipBreak();
+    await h.settle();
+    expect(h.api.timerCommand).toHaveBeenLastCalledWith(h.identity.token, 'r1', {
+      action: 'skipBreak',
+      rev: 1,
+    });
+    expect(h.api.timerCommand).toHaveBeenCalledTimes(3);
+    expect(h.api.patchRoom).not.toHaveBeenCalled();
   });
 
   it('patches settings after the debounce, and coalesces rapid mix changes', async () => {
@@ -411,9 +430,11 @@ describe('applying remote state', () => {
     expect(h.rooms.locked).toBe(false);
     expect(h.api.patchRoom).not.toHaveBeenCalled();
     h.timer.pause();
-    expect(h.api.patchRoom).toHaveBeenCalledWith(h.identity.token, 'other', {
-      timer: h.timer.state,
+    expect(h.api.timerCommand).toHaveBeenCalledWith(h.identity.token, 'other', {
+      action: 'pause',
+      rev: 1,
     });
+    expect(h.api.patchRoom).not.toHaveBeenCalled();
   });
 });
 
@@ -756,13 +777,59 @@ describe('between timers', () => {
   it('sends timer changes one at a time so the server applies them in order', async () => {
     await h.asHost();
     const release = holdPatch();
-    h.timer.pause();
+    h.timer.restart();
     h.timer.stop();
     expect(h.api.patchRoom).toHaveBeenCalledOnce();
     release(mkRoom({ timerRev: 2 }));
     await h.settle();
     expect(h.api.patchRoom).toHaveBeenCalledTimes(2);
     expect(h.api.patchRoom).toHaveBeenLastCalledWith(h.identity.token, 'r1', { timer: null });
+  });
+
+  it('adopts the server timer, silently, when a command is refused with 409', async () => {
+    await h.asHost();
+    h.api.timerCommand.mockRejectedValueOnce(
+      new ApiError(409, 'the timer changed', {
+        error: 'the timer changed',
+        room: mkRoom({ timer: NEXT, timerRev: 4 }),
+      }),
+    );
+    h.timer.pause();
+    await h.settle();
+    expect(h.timer.state).toEqual(NEXT);
+    expect(h.rooms.room?.timerRev).toBe(4);
+    expect(h.rooms.error).toBeFalsy();
+    // The next command is based on the adopted rev.
+    h.timer.pause();
+    await h.settle();
+    expect(h.api.timerCommand).toHaveBeenLastCalledWith(h.identity.token, 'r1', {
+      action: 'pause',
+      rev: 4,
+    });
+  });
+
+  it('takes the server timer from a command answered with 200', async () => {
+    await h.asHost();
+    const theirs: TimerState = { ...TIMER, elapsedMs: 7000, anchorAt: null };
+    h.api.timerCommand.mockResolvedValueOnce(mkRoom({ timer: theirs, timerRev: 1 }));
+    h.timer.pause();
+    await h.settle();
+    expect(h.timer.state).toEqual(theirs);
+  });
+
+  it('sends a command only after the patch ahead of it is answered', async () => {
+    await h.asHost();
+    const release = holdPatch();
+    await h.startTimer();
+    h.timer.pause();
+    expect(h.api.patchRoom).toHaveBeenCalledOnce();
+    expect(h.api.timerCommand).not.toHaveBeenCalled();
+    release(mkRoom({ timerRev: 3 }));
+    await h.settle();
+    expect(h.api.timerCommand).toHaveBeenCalledWith(h.identity.token, 'r1', {
+      action: 'pause',
+      rev: 3,
+    });
   });
 
   it('leaves rooms waiting for their host out of the list', async () => {

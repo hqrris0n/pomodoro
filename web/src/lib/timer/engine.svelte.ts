@@ -7,6 +7,8 @@ const TICK_MS = 250;
 
 type Opts = { focusMin: number; breakMin: number; rounds: number };
 type Phase = TimerView['phase'];
+/** Why onChange fired, when it was Pause, Resume or Skip break. */
+export type TimerCause = 'pause' | 'resume' | 'skipBreak';
 
 function isState(v: unknown): v is TimerState {
   if (typeof v !== 'object' || v === null) return false;
@@ -28,7 +30,7 @@ export class TimerEngine {
   #offset = 0;
   #interval: ReturnType<typeof setInterval> | null = null;
   #lastPhase: Phase | null = null;
-  #changeFns = [] as ((state: TimerState | null) => void)[];
+  #changeFns = [] as ((state: TimerState | null, cause?: TimerCause) => void)[];
   #phaseFns = [] as ((from: Phase, to: Phase, view: TimerView) => void)[];
 
   constructor() {
@@ -83,11 +85,16 @@ export class TimerEngine {
     this.#arm();
   }
 
-  #set(next: TimerState | null, notify: boolean) {
+  #set(next: TimerState | null, notify: boolean, cause?: TimerCause) {
     this.state = next;
     save(KEY, next);
     this.#settle();
-    if (notify) for (const fn of this.#changeFns) fn(next);
+    if (notify) {
+      for (const fn of this.#changeFns) {
+        if (cause) fn(next, cause);
+        else fn(next);
+      }
+    }
   }
 
   start(opts: Opts) {
@@ -95,11 +102,11 @@ export class TimerEngine {
   }
 
   pause() {
-    if (this.state) this.#set(paused(this.state, this.#clock()), true);
+    if (this.state) this.#set(paused(this.state, this.#clock()), true, 'pause');
   }
 
   resume() {
-    if (this.state) this.#set(resumed(this.state, this.#clock()), true);
+    if (this.state) this.#set(resumed(this.state, this.#clock()), true, 'resume');
   }
 
   /** End a break early. Reported through onPhaseChange like a break ending on its own. */
@@ -107,13 +114,13 @@ export class TimerEngine {
     if (!this.state) return;
     const now = this.#clock();
     if (snapshot(this.state, now).phase !== 'break') return;
-    this.#setReporting(skippedBreak(this.state, now), true);
+    this.#setReporting(skippedBreak(this.state, now), true, 'skipBreak');
   }
 
   /** #set settles the phase silently; report a change between two live timers, once. */
-  #setReporting(next: TimerState | null, notify: boolean) {
+  #setReporting(next: TimerState | null, notify: boolean, cause?: TimerCause) {
     const from = this.#lastPhase;
-    this.#set(next, notify);
+    this.#set(next, notify, cause);
     const to = this.#lastPhase;
     if (from !== null && to !== null && from !== to && this.state) {
       const view = snapshot(this.state, this.#now);
@@ -140,7 +147,7 @@ export class TimerEngine {
     this.#settle();
   }
 
-  onChange(fn: (state: TimerState | null) => void): () => void {
+  onChange(fn: (state: TimerState | null, cause?: TimerCause) => void): () => void {
     this.#changeFns.push(fn);
     return () => {
       this.#changeFns = this.#changeFns.filter((f) => f !== fn);

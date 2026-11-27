@@ -105,4 +105,24 @@ describe('TimerEngine', () => {
     e.pause();
     expect(fn).toHaveBeenCalledTimes(1);
   });
+
+  it('tells onChange why Pause, Resume and Skip break fired, and nothing for the rest', () => {
+    const e = new TimerEngine();
+    const fn = vi.fn();
+    e.onChange(fn);
+    e.start(opts);
+    expect(fn).toHaveBeenLastCalledWith(e.state);
+    e.pause();
+    expect(fn).toHaveBeenLastCalledWith(e.state, 'pause');
+    e.resume();
+    expect(fn).toHaveBeenLastCalledWith(e.state, 'resume');
+    vi.advanceTimersByTime(opts.focusMin * 60_000 + 1000);
+    e.skipBreak();
+    expect(fn).toHaveBeenLastCalledWith(e.state, 'skipBreak');
+    fn.mockClear();
+    e.apply(null);
+    e.restart();
+    e.stop();
+    expect(fn.mock.calls.every((c) => c.length === 1)).toBe(true);
+  });
 });

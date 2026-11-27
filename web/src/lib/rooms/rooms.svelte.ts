@@ -7,7 +7,7 @@ import { notes, type Note } from '../notes/notes.svelte';
 import { profileSync } from '../profiles/sync';
 import { identity } from '../shell/identity.svelte';
 import { load, save } from '../storage';
-import { timer } from '../timer/engine.svelte';
+import { timer, type TimerCause } from '../timer/engine.svelte';
 import { elapsedAt, snapshot } from '../timer/schedule';
 import type { Mix, SavedMix, Settings, SettingsPatch, TimerState } from '../types';
 import * as realApi from './api';
@@ -39,7 +39,7 @@ export type RoomsDeps = {
     state: TimerState | null;
     apply(state: TimerState | null): void;
     stop(): void;
-    onChange(fn: (state: TimerState | null) => void): () => void;
+    onChange(fn: (state: TimerState | null, cause?: TimerCause) => void): () => void;
     setClockOffset(ms: number): void;
   };
   drinks: { selectedId: string; selected?: { id: string } | null; select(id: string): void };
@@ -218,7 +218,7 @@ export class RoomsStore {
     this.#running = true;
     this.#backoff = RETRY_MIN_MS;
     const d = this.#d;
-    const offChange = d.timer.onChange((state) => this.#onTimerChange(state));
+    const offChange = d.timer.onChange((state, cause) => this.#onTimerChange(state, cause));
     const stopEffects = $effect.root(() => {
       let prevVisible = d.identity.visible;
       let prevName = d.identity.name;
@@ -358,7 +358,7 @@ export class RoomsStore {
   }
 
   /** Make `room` the current room and mirror it locally without sending anything. */
-  #adopt(room: Room, role: Role) {
+  #adopt(room: Room, role: Role, force = false) {
     const d = this.#d;
     const sameRoom = this.room?.id === room.id;
     if (!sameRoom) {
@@ -370,7 +370,7 @@ export class RoomsStore {
     // already seen, the local timer is newer than the event's: keep it.
     const mine = this.#patching > 0 && this.#patchingRoom === room.id;
     const rev = room.timerRev ?? 0;
-    const fresh = !mine && rev >= this.#seenRev;
+    const fresh = force || (!mine && rev >= this.#seenRev);
     this.room = room;
     this.role = role;
     if (role === 'guest' && !load<OwnSettings | null>(SNAPSHOT_KEY, null)) {
@@ -511,7 +511,7 @@ export class RoomsStore {
     );
   }
 
-  #onTimerChange(state: TimerState | null) {
+  #onTimerChange(state: TimerState | null, cause?: TimerCause) {
     const d = this.#d;
     if (this.role === 'guest') return;
     const room = this.room;
@@ -530,7 +530,8 @@ export class RoomsStore {
       return;
     }
     if (room && this.#controls) {
-      this.#patchTimer(room.id, state);
+      if (cause) this.#commandTimer(room.id, cause);
+      else this.#patchTimer(room.id, state);
     } else if (!room && this.#canPublish()) {
       void this.#create(state);
     }
@@ -539,12 +540,44 @@ export class RoomsStore {
   /** Send a timer change (null clears it), after any earlier one has been answered. */
   #patchTimer(roomId: string, timer: TimerState | null) {
     const d = this.#d;
-    const send = async () => {
+    this.#enqueueTimer(roomId, async () => {
+      const room = await d.api.patchRoom(d.identity.token, roomId, { timer });
+      if (this.room?.id === room.id) {
+        this.#seenRev = Math.max(this.#seenRev, room.timerRev ?? 0);
+      }
+    });
+  }
+
+  /**
+   * Send Pause, Resume or Skip break as a command carrying the timerRev the local timer
+   * is based on. A 409 means the timer was replaced meanwhile: take the server's room.
+   */
+  #commandTimer(roomId: string, action: TimerCause) {
+    const d = this.#d;
+    this.#enqueueTimer(roomId, async () => {
+      const rev = this.#seenRev || this.room?.timerRev || 0;
       try {
-        const room = await d.api.patchRoom(d.identity.token, roomId, { timer });
+        const room = await d.api.timerCommand(d.identity.token, roomId, { action, rev });
         if (this.room?.id === room.id) {
           this.#seenRev = Math.max(this.#seenRev, room.timerRev ?? 0);
+          // A no-op on the server publishes no event, so take its timer, unless a
+          // later request is queued behind this one (the local timer is ahead).
+          if (this.#patching === 1) d.timer.apply(room.timer);
         }
+      } catch (e) {
+        const body = e instanceof ApiError && e.status === 409 ? e.body : null;
+        const room = (body as { room?: Room } | null)?.room;
+        if (room && this.room?.id === room.id) this.#adopt(room, this.#roleIn(room), true);
+        else throw e;
+      }
+    });
+  }
+
+  /** Run one timer request after any earlier one has been answered. */
+  #enqueueTimer(roomId: string, run: () => Promise<void>) {
+    const send = async () => {
+      try {
+        await run();
       } catch {
         // the solo timer keeps working; the next change or event resyncs
       } finally {

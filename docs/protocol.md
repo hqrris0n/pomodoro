@@ -410,8 +410,11 @@ reach the server in.
   all controls for timer, drink, background and mix are disabled, and the
   host's saved mixes replace their own in the mixer. On leaving,
   the guest's own saved drink, background and mix are restored.
-- Host and co-host send timer patches one at a time, each after the previous
-  one is answered, so the server applies them in order. While one is in
+- Host and co-host send timer requests one at a time, each after the previous
+  one is answered, so the server applies them in order. Start, restart, Same
+  again and clearing are `PATCH`es of the whole timer; Pause, Resume and Skip
+  break are `POST /rooms/{id}/timer` commands carrying the last-seen `timerRev`,
+  and a 409 makes the client quietly adopt the `room` it returns. While one is in
   flight, and for views older than the newest `timerRev` seen, the local
   timer is kept. A client also ignores `room` events for a room it has just
   left until it sees `room: null` or another room.
@@ -445,9 +448,6 @@ server merges them under its lock: changes to different fields, or to different
 mix channels, all survive. Only when two people change the same field or the
 same channel does the request the server handles last win.
 
-### Timer commands
-
-Pause, resume and skip break used to be sent as a whole timer that the client
 ### Saved mixes
 
 Two co-hosts saving a mix at the same moment used to each send the whole list
@@ -458,6 +458,9 @@ is under its lock: both mixes end up in the list, once each, in the order the
 server handled them. A retry of the same entry is skipped rather than
 duplicated.
 
+### Timer commands
+
+Pause, resume and skip break used to be sent as a whole timer that the client
 had computed from its own clock. Two hosts pressing pause together then each
 stored their own arithmetic, and the later one won. They are now commands the
 server computes under its lock with its own clock, and each one says what to

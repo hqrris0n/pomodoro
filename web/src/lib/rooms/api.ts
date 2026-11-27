@@ -32,10 +32,13 @@ export type ListedRoom = Omit<RoomSummary, 'timer'> & { timer: TimerState | null
 
 export class ApiError extends Error {
   readonly status: number;
-  constructor(status: number, message: string) {
+  /** The parsed response body, when there was one. */
+  readonly body?: unknown;
+  constructor(status: number, message: string, body?: unknown) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
+    this.body = body;
   }
 }
 
@@ -58,7 +61,7 @@ async function call<T>(token: string, method: string, path: string, body?: unkno
       data && typeof data === 'object' && typeof (data as { error?: unknown }).error === 'string'
         ? (data as { error: string }).error
         : `Request failed (${res.status})`;
-    throw new ApiError(res.status, msg);
+    throw new ApiError(res.status, msg, data ?? undefined);
   }
   return data as T;
 }
@@ -86,6 +89,14 @@ export function patchRoom(
   body: { settings?: SettingsPatch; timer?: TimerState | null },
 ): Promise<Room> {
   return call(token, 'PATCH', `/rooms/${id(roomId)}`, body);
+}
+
+export function timerCommand(
+  token: string,
+  roomId: string,
+  body: { action: 'pause' | 'resume' | 'skipBreak'; rev: number },
+): Promise<Room> {
+  return call(token, 'POST', `/rooms/${id(roomId)}/timer`, body);
 }
 
 export function setRole(
@@ -122,6 +133,7 @@ export type RoomsApi = {
   joinRoom: typeof joinRoom;
   leaveRoom: typeof leaveRoom;
   patchRoom: typeof patchRoom;
+  timerCommand: typeof timerCommand;
   setRole: typeof setRole;
   claimChannel: typeof claimChannel;
   releaseChannel: typeof releaseChannel;
