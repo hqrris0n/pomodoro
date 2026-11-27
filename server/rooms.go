@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"maps"
 	"reflect"
 	"sort"
 	"sync"
@@ -555,11 +556,13 @@ func (h *hub) Leave(token, roomID string) error {
 	return nil
 }
 
-// Patch replaces the given parts of the room; host and co-hosts only. A nil
-// part is kept. clearTimer removes the timer, leaving the room open while the
+// Patch changes the given parts of the room; host and co-hosts only. A nil
+// part is kept; settings are merged field by field and the mix per channel
+// (level 0 removes a channel), under the hub lock so concurrent patches to
+// different fields all survive. clearTimer removes the timer, leaving the room open while the
 // host picks the next order; only the host may clear the timer or start one in
 // a room that has none.
-func (h *hub) Patch(token, roomID string, s *Settings, t *Timer, clearTimer bool) (Room, error) {
+func (h *hub) Patch(token, roomID string, s *settingsPatch, t *Timer, clearTimer bool) (Room, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	c, err := h.clientLocked(token)
@@ -577,14 +580,40 @@ func (h *hub) Patch(token, roomID string, s *Settings, t *Timer, clearTimer bool
 		return Room{}, errNotHost
 	}
 	if s != nil {
-		if s.Mixes == nil {
-			v := *s
-			v.Mixes = r.settings.Mixes
-			s = &v
-		} else if me.role != roleHost && !onlyAppends(r.settings.Mixes, s.Mixes) {
+		if s.Mixes != nil && me.role != roleHost && !onlyAppends(r.settings.Mixes, s.Mixes) {
 			return Room{}, errMixesAppendOnly
 		}
-		r.settings = *s
+		var merged map[string]float64
+		if s.Mix != nil {
+			merged = make(map[string]float64, len(r.settings.Mix)+len(s.Mix))
+			maps.Copy(merged, r.settings.Mix)
+			for k, v := range s.Mix {
+				if v == 0 {
+					delete(merged, k)
+				} else {
+					merged[k] = v
+				}
+			}
+			if len(merged) > maxMixKeys {
+				return Room{}, badRequest("mix may have at most 16 channels")
+			}
+		}
+		// Everything is checked; apply.
+		if s.DrinkID != nil {
+			r.settings.DrinkID = *s.DrinkID
+		}
+		if s.BackgroundID != nil {
+			r.settings.BackgroundID = *s.BackgroundID
+		}
+		if s.BackgroundRotateMin != nil {
+			r.settings.BackgroundRotateMin = *s.BackgroundRotateMin
+		}
+		if merged != nil {
+			r.settings.Mix = merged
+		}
+		if s.Mixes != nil {
+			r.settings.Mixes = s.Mixes
+		}
 	}
 	if t != nil || clearTimer {
 		if clearTimer {

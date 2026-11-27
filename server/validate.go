@@ -27,6 +27,17 @@ type Settings struct {
 	Mixes []SavedMix `json:"mixes"`
 }
 
+// settingsPatch is the body of PATCH settings: every field is optional and an
+// absent one (nil) keeps the room's value. Mix is merged per channel, where a
+// level of 0 removes the channel; Mixes follows the "Shared mixes" rules.
+type settingsPatch struct {
+	DrinkID             *string            `json:"drinkId"`
+	BackgroundID        *string            `json:"backgroundId"`
+	BackgroundRotateMin *int               `json:"backgroundRotateMin"`
+	Mix                 map[string]float64 `json:"mix"`
+	Mixes               []SavedMix         `json:"mixes"`
+}
+
 // SavedMix is one entry of the host's saved list.
 type SavedMix struct {
 	ID   string             `json:"id"`
@@ -167,6 +178,32 @@ func validateSettings(in Settings) (Settings, error) {
 		}
 		in.Mixes = out
 	}
+	return in, nil
+}
+
+// validatePatch checks the parts of a settings patch that are present, with the
+// same limits as validateSettings. The merged mix size is checked by the hub.
+func validatePatch(in settingsPatch) (settingsPatch, error) {
+	var s Settings
+	if in.DrinkID != nil {
+		s.DrinkID = *in.DrinkID
+	}
+	if in.BackgroundID != nil {
+		s.BackgroundID = *in.BackgroundID
+	}
+	if in.BackgroundRotateMin != nil {
+		s.BackgroundRotateMin = *in.BackgroundRotateMin
+	}
+	s.Mix = in.Mix
+	s.Mixes = in.Mixes
+	v, err := validateSettings(s)
+	if err != nil {
+		return settingsPatch{}, err
+	}
+	if in.Mix != nil {
+		in.Mix = v.Mix
+	}
+	in.Mixes = v.Mixes
 	return in, nil
 }
 

@@ -213,7 +213,7 @@ describe('publishing my timer', () => {
     expect(h.api.patchRoom).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(300);
     expect(h.api.patchRoom).toHaveBeenCalledOnce();
-    expect((h.api.patchRoom.mock.calls[0] as unknown[])[2]).toMatchObject({
+    expect((h.api.patchRoom.mock.calls[0] as unknown[])[2]).toEqual({
       settings: { drinkId: 'tea' },
     });
 
@@ -225,8 +225,57 @@ describe('publishing my timer', () => {
     }
     await vi.advanceTimersByTimeAsync(300);
     expect(h.api.patchRoom).toHaveBeenCalledOnce();
-    expect((h.api.patchRoom.mock.calls[0] as unknown[])[2]).toMatchObject({
+    expect((h.api.patchRoom.mock.calls[0] as unknown[])[2]).toEqual({
       settings: { mix: { rain: 0.6 } },
+    });
+  });
+
+  it('sends only the changed channel, and a channel turned off as 0', async () => {
+    await h.asHost();
+    h.sound.setVolume('rain', 0.8);
+    flushSync();
+    await vi.advanceTimersByTimeAsync(300);
+    expect(h.api.patchRoom).toHaveBeenCalledOnce();
+    expect((h.api.patchRoom.mock.calls[0] as unknown[])[2]).toEqual({
+      settings: { mix: { rain: 0.8 } },
+    });
+
+    h.api.patchRoom.mockClear();
+    h.sound.setVolume('rain', 0);
+    flushSync();
+    await vi.advanceTimersByTimeAsync(300);
+    expect((h.api.patchRoom.mock.calls[0] as unknown[])[2]).toEqual({
+      settings: { mix: { rain: 0 } },
+    });
+
+    // Nothing differs from what the server holds: nothing is sent.
+    h.api.patchRoom.mockClear();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(h.api.patchRoom).not.toHaveBeenCalled();
+  });
+
+  it('keeps a pending local change when a room event arrives, and still sends it', async () => {
+    await h.asHost();
+    h.sound.setVolume('rain', 0.9);
+    flushSync();
+    await vi.advanceTimersByTimeAsync(100);
+    // A co-host moved fire and the background meanwhile; rain is the old value.
+    h.es().emit('room', {
+      now: Date.now(),
+      you: 'me',
+      room: mkRoom({
+        settings: { ...SETTINGS, backgroundId: 'rainy-window', mix: { rain: 0.5, fire: 0.4 } },
+      }),
+    });
+    flushSync();
+    expect(h.sound.mix.rain).toBe(0.9);
+    expect(h.sound.mix.fire).toBe(0.4);
+    expect(h.backgrounds.selectedId).toBe('rainy-window');
+    expect(h.api.patchRoom).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(300);
+    expect(h.api.patchRoom).toHaveBeenCalledOnce();
+    expect((h.api.patchRoom.mock.calls[0] as unknown[])[2]).toEqual({
+      settings: { mix: { rain: 0.9 } },
     });
   });
 
@@ -785,6 +834,9 @@ describe("sharing the host's saved mixes", () => {
     h.sound.applyMix({ chatter: 0.6 });
     expect(h.sound.saveCurrent('Study')).toBeNull();
     expect(h.api.patchRoom).toHaveBeenCalledOnce();
+    expect((h.api.patchRoom.mock.calls[0] as unknown[])[2]).toEqual({
+      settings: { mixes: patchedSettings(0).mixes },
+    });
     const sent = patchedSettings(0).mixes!;
     expect(sent.slice(0, 2)).toEqual(SHARED);
     expect(sent).toHaveLength(3);

@@ -1,4 +1,4 @@
-import type { Settings, TimerState } from '../types';
+import type { Settings, SettingsPatch, TimerState } from '../types';
 
 export type Role = 'host' | 'cohost' | 'guest';
 export type Member = {
@@ -81,7 +81,7 @@ export function leaveRoom(token: string, roomId: string): Promise<Record<string,
 export function patchRoom(
   token: string,
   roomId: string,
-  body: { settings?: Settings; timer?: TimerState | null },
+  body: { settings?: SettingsPatch; timer?: TimerState | null },
 ): Promise<Room> {
   return call(token, 'PATCH', `/rooms/${id(roomId)}`, body);
 }

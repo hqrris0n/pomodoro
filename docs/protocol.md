@@ -92,7 +92,7 @@ room at all.
 | `POST /rooms`                 | anyone  | `{name, settings, timer}`         | Leaves any current room, creates a room with the caller as host. Returns `Room`. |
 | `POST /rooms/{id}/join`       | anyone  | `{name}`                          | Leaves any current room, joins as guest. Returns `Room`. |
 | `POST /rooms/{id}/leave`      | member  | —                                 | Leaves. |
-| `PATCH /rooms/{id}`           | host, co-host | `{settings?, timer?}`             | Replaces the given parts. `timer: null` clears the timer (host only). |
+| `PATCH /rooms/{id}`           | host, co-host | `{settings?, timer?}`             | `timer` is replaced; `timer: null` clears it (host only). `settings` is a partial object, merged into the room's (see below). |
 | `POST /rooms/{id}/role`       | host    | `{memberId, role}`                | Sets that member's role to `"cohost"` or `"guest"`. The host's own role cannot change (400); an unknown member is 404. |
 | `POST /rooms/{id}/notes`      | member  | `{to, text}`                      | Sends a sticky note to another member of the room. Returns `202 {id}`. |
 | `PUT /me`                     | anyone  | `{name}`                          | Renames the caller in their room. |
@@ -104,7 +104,17 @@ to the name given on the stream. `PUT /me` while in no room is a 403 (the name
 is sent again with the next create or join). Joining the room you are already
 in returns it unchanged.
 
-In `PATCH`, a missing `timer` keeps the timer and `"timer": null` clears it;
+In `PATCH`, `settings` is partial and every field is optional: `drinkId`,
+`backgroundId` and `backgroundRotateMin` are kept when absent and replaced
+(same validation as create) when present; `mix` is merged per channel, each key
+setting that channel's level, and a level of `0` removes the channel (absent
+channels are kept); `mixes` follows "Shared mixes". The merged mix may have at
+most 16 channels, else 400 and nothing changes. `settings: {}` is accepted and
+changes nothing; a body with neither `settings` nor `timer` is 400. `POST
+/rooms` still takes the full settings. Responses and events carry the full
+settings.
+
+A missing `timer` keeps the timer and `"timer": null` clears it;
 `timerRev` changes only when the timer is replaced or cleared.
 `timer.anchorAt` sent by a client is treated as a boolean: non-null means
 "running", and the server replaces it with its own `now`. Errors are
@@ -365,7 +375,11 @@ reach the server in.
 ## Client behaviour
 
 - Host and co-host: local engine is the source of truth; every local change to timer or
-  settings is sent with `PATCH`.
+  settings is sent with `PATCH`. A settings patch carries only what differs from the
+  settings last known to be on the server: changed scalar fields, and in `mix` only the
+  channels whose level changed (a channel turned off is `0`). A room event that arrives
+  while a local change waits in the 300 ms debounce does not overwrite the pending
+  fields and channels; they are sent when the debounce fires.
 - Guest: local engine and settings are overwritten by each `room` event and
   all controls for timer, drink, background and mix are disabled, and the
   host's saved mixes replace their own in the mixer. On leaving,
@@ -387,6 +401,15 @@ reach the server in.
   the stream with backoff (2s doubling to 30s).
 
 ## Concurrency
+
+### Settings changes
+
+Host and co-hosts can change settings at the same time. A patch that carried
+the whole settings object would let the later request silently undo another
+person's change to a different field, so settings patches are partial and the
+server merges them under its lock: changes to different fields, or to different
+mix channels, all survive. Only when two people change the same field or the
+same channel does the request the server handles last win.
 
 ### Host succession
 

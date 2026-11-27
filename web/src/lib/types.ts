@@ -60,3 +60,9 @@ export type Settings = {
    */
   mixes?: SavedMix[];
 };
+
+/**
+ * What a settings patch carries: only fields that changed. In `mix`, each key
+ * sets that channel's level and 0 removes the channel; absent channels stay.
+ */
+export type SettingsPatch = Partial<Omit<Settings, 'mix'>> & { mix?: Mix };

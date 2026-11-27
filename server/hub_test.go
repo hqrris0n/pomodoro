@@ -743,7 +743,7 @@ func TestOnlyHostClearsOrStartsTimer(t *testing.T) {
 	}
 	s := testSettings()
 	s.DrinkID = "tea"
-	if _, err := h.Patch(tok(2), r.ID, &s, nil, false); err != nil {
+	if _, err := h.Patch(tok(2), r.ID, patchOf(s), nil, false); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -783,7 +783,7 @@ func TestIdleRoomExpiresAfterThirtyMinutes(t *testing.T) {
 	// Settings changes do not keep an idle room alive.
 	clk.Advance(10 * time.Minute)
 	s := testSettings()
-	if _, err := h.Patch(tok(1), r.ID, &s, nil, false); err != nil {
+	if _, err := h.Patch(tok(1), r.ID, patchOf(s), nil, false); err != nil {
 		t.Fatal(err)
 	}
 	clk.Advance(20*time.Minute - time.Second)
@@ -902,7 +902,7 @@ func TestMixesInRoom(t *testing.T) {
 		if err != nil {
 			return Room{}, err
 		}
-		return h.Patch(token, r.ID, &v, nil, false)
+		return h.Patch(token, r.ID, patchOf(v), nil, false)
 	}
 	extra := mixOf("b", "Study", 0.3)
 
@@ -934,7 +934,7 @@ func TestMixesInRoom(t *testing.T) {
 	noMixes := testSettings()
 	noMixes.DrinkID = "mocha"
 	for _, token := range []string{co, host} {
-		got, err = h.Patch(token, r.ID, &noMixes, nil, false)
+		got, err = h.Patch(token, r.ID, patchOf(noMixes), nil, false)
 		if err != nil || got.Settings.DrinkID != "mocha" || len(got.Settings.Mixes) != 2 {
 			t.Fatalf("no mixes: %v %+v", err, got.Settings)
 		}

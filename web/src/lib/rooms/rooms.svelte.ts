@@ -8,7 +8,7 @@ import { identity } from '../shell/identity.svelte';
 import { load, save } from '../storage';
 import { timer } from '../timer/engine.svelte';
 import { elapsedAt, snapshot } from '../timer/schedule';
-import type { Mix, SavedMix, Settings, TimerState } from '../types';
+import type { Mix, SavedMix, Settings, SettingsPatch, TimerState } from '../types';
 import * as realApi from './api';
 import {
   ApiError,
@@ -91,8 +91,32 @@ export function currentSettings(src: SettingsSource = { drinks, backgrounds, sou
   };
 }
 
-const sig = (s: Settings) => JSON.stringify({ ...s, mix: cleanMix(s.mix) });
 const sigMixes = (m: SavedMix[] | undefined) => JSON.stringify(m ?? null);
+
+/**
+ * What differs between `cur` and the settings known to be on the server, as a
+ * patch (null when nothing does). Only changed scalar fields and changed mix
+ * channels are included; a channel that is off now is sent as 0. `mixes` goes
+ * only when `cur` has a list and it differs. With no baseline everything is sent.
+ */
+export function diffSettings(cur: Settings, base: Settings | null): SettingsPatch | null {
+  const out: SettingsPatch = {};
+  if (!base || cur.drinkId !== base.drinkId) out.drinkId = cur.drinkId;
+  if (!base || cur.backgroundId !== base.backgroundId) out.backgroundId = cur.backgroundId;
+  if (!base || cur.backgroundRotateMin !== base.backgroundRotateMin) {
+    out.backgroundRotateMin = cur.backgroundRotateMin;
+  }
+  const now = cleanMix(cur.mix);
+  const was = base ? cleanMix(base.mix) : {};
+  const mix: Mix = {};
+  for (const k of Object.keys(now)) if (now[k] !== was[k]) mix[k] = now[k];
+  for (const k of Object.keys(was)) if (!(k in now)) mix[k] = 0;
+  if (Object.keys(mix).length > 0) out.mix = mix;
+  if (cur.mixes !== undefined && sigMixes(cur.mixes) !== sigMixes(base?.mixes)) {
+    out.mixes = cur.mixes;
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
 
 function isDone(state: TimerState, now: number): boolean {
   return snapshot(state, now).phase === 'done';
@@ -135,8 +159,8 @@ export class RoomsStore {
   #backoff = RETRY_MIN_MS;
   #running = false;
   #debounce: ReturnType<typeof setTimeout> | null = null;
-  /** Signature of the settings the server is known to hold (or that came from it). */
-  #synced = '';
+  /** The settings the server is known to hold (or that came from it); null: unknown. */
+  #synced: Settings | null = null;
   #creating = false;
   #joining = false;
   /** Highest `timerRev` applied or caused for the current room; older timers are stale. */
@@ -181,7 +205,7 @@ export class RoomsStore {
         void this.room?.id;
         const next = this.#effective();
         untrack(() => {
-          this.#onSettingsChanged(sig(next));
+          this.#onSettingsChanged(next);
         });
       });
       $effect(() => {
@@ -311,7 +335,8 @@ export class RoomsStore {
   /** Make `room` the current room and mirror it locally without sending anything. */
   #adopt(room: Room, role: Role) {
     const d = this.#d;
-    if (this.room?.id !== room.id) {
+    const sameRoom = this.room?.id === room.id;
+    if (!sameRoom) {
       this.#seenRev = 0;
       this.#knownMixIds = [];
       this.#syncedMixes = undefined;
@@ -331,16 +356,45 @@ export class RoomsStore {
       this.#seenRev = rev;
       d.timer.apply(room.timer);
     }
-    d.drinks.select(room.settings.drinkId);
-    d.backgrounds.select(room.settings.backgroundId);
-    d.sound.applyMix({ ...room.settings.mix });
-    d.backgrounds.setRotate(this.#drivesRotation(room) ? room.settings.backgroundRotateMin : 0);
+    // A local change still waiting in the debounce is not overwritten by the
+    // room's view: those fields and channels stay as they are and go out when
+    // the debounce fires. (Own mixes list is handled by #adoptMixes.)
+    const keep =
+      this.#debounce && sameRoom && this.#controls && role !== 'guest'
+        ? diffSettings({ ...this.#effective(), mixes: undefined }, this.#synced)
+        : null;
+    const rs = room.settings;
+    if (keep?.drinkId === undefined) d.drinks.select(rs.drinkId);
+    if (keep?.backgroundId === undefined) d.backgrounds.select(rs.backgroundId);
+    const mix = { ...rs.mix };
+    const kept: Mix = keep?.mix ?? {};
+    for (const [k, v] of Object.entries(kept)) {
+      if (v === 0) delete mix[k];
+      else mix[k] = v;
+    }
+    d.sound.applyMix(mix);
+    if (keep?.backgroundRotateMin === undefined) {
+      d.backgrounds.setRotate(this.#drivesRotation(room) ? rs.backgroundRotateMin : 0);
+    }
     const mixesPending = this.#adoptMixes(room, role);
-    const eff = this.#effective();
-    // A host's own list is not overwritten by the room, so a change of it that
-    // has not been sent yet stays pending.
-    this.#synced = sig(role === 'host' ? { ...eff, mixes: this.#syncedMixes } : eff);
-    if (this.#debounce && !mixesPending) {
+    // The baseline is what the room holds; pending local fields differ from it
+    // and so remain to be sent. A host's own list is not overwritten by the
+    // room, so a change of it that has not been sent yet stays pending.
+    const base = this.#effective();
+    if (keep?.drinkId !== undefined) base.drinkId = rs.drinkId;
+    if (keep?.backgroundId !== undefined) base.backgroundId = rs.backgroundId;
+    if (keep?.backgroundRotateMin !== undefined) base.backgroundRotateMin = rs.backgroundRotateMin;
+    if (keep?.mix) {
+      const bm = cleanMix(base.mix);
+      for (const k of Object.keys(keep.mix)) {
+        if (rs.mix[k] > 0) bm[k] = rs.mix[k];
+        else delete bm[k];
+      }
+      base.mix = bm;
+    }
+    base.mixes = role === 'host' ? this.#syncedMixes : undefined;
+    this.#synced = base;
+    if (this.#debounce && !mixesPending && !keep) {
       clearTimeout(this.#debounce);
       this.#debounce = null;
     }
@@ -506,7 +560,7 @@ export class RoomsStore {
       this.room = room;
       this.role = 'host';
       this.#seenRev = room.timerRev ?? 0;
-      this.#synced = sig(settings);
+      this.#synced = settings;
       this.#syncedMixes = settings.mixes;
       this.#knownMixIds = settings.mixes?.map((m) => m.id) ?? [];
     } catch {
@@ -516,23 +570,23 @@ export class RoomsStore {
     }
   }
 
-  #onSettingsChanged(signature: string) {
+  #onSettingsChanged(current: Settings) {
     if (!this.#controls || !this.room) return;
-    if (signature === this.#synced) return;
+    if (!diffSettings(current, this.#synced)) return;
     if (this.#debounce) clearTimeout(this.#debounce);
     this.#debounce = setTimeout(() => {
       this.#debounce = null;
       const room = this.room;
       if (!this.#controls || !room) return;
       const settings = this.#effective();
-      const s = sig(settings);
-      if (s === this.#synced) return;
-      this.#synced = s;
+      const patch = diffSettings(settings, this.#synced);
+      if (!patch) return;
+      this.#synced = settings;
       if (this.role === 'host') {
         this.#syncedMixes = settings.mixes;
         this.#knownMixIds.push(...(settings.mixes ?? []).map((m) => m.id));
       }
-      this.#d.api.patchRoom(this.#d.identity.token, room.id, { settings }).catch(() => {});
+      this.#d.api.patchRoom(this.#d.identity.token, room.id, { settings: patch }).catch(() => {});
     }, DEBOUNCE_MS);
   }
 
@@ -606,9 +660,8 @@ export class RoomsStore {
     if (!room || this.role !== 'cohost') return;
     const next = [...(d.sound.roomMixes ?? room.settings.mixes ?? []), mix];
     d.sound.setRoomMixes(next);
-    const settings = { ...this.#effective(), mixes: next };
     d.api
-      .patchRoom(d.identity.token, room.id, { settings })
+      .patchRoom(d.identity.token, room.id, { settings: { mixes: next } })
       .then((res) => {
         if (this.room?.id === room.id && this.role === 'cohost' && res.settings.mixes) {
           d.sound.setRoomMixes(res.settings.mixes);

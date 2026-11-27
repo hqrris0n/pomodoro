@@ -186,7 +186,7 @@ func (a *api) leave(w http.ResponseWriter, r *http.Request, token string) error 
 func (a *api) patch(w http.ResponseWriter, r *http.Request, token string) error {
 	// Timer stays raw to tell an absent timer (keep it) from null (clear it).
 	var in struct {
-		Settings *Settings       `json:"settings"`
+		Settings *settingsPatch  `json:"settings"`
 		Timer    json.RawMessage `json:"timer"`
 	}
 	if err := decode(r, &in); err != nil {
@@ -196,10 +196,10 @@ func (a *api) patch(w http.ResponseWriter, r *http.Request, token string) error 
 	if in.Settings == nil && len(in.Timer) == 0 {
 		return badRequest("nothing to change")
 	}
-	var s *Settings
+	var s *settingsPatch
 	var t *Timer
 	if in.Settings != nil {
-		v, err := validateSettings(*in.Settings)
+		v, err := validatePatch(*in.Settings)
 		if err != nil {
 			return err
 		}
