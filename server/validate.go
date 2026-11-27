@@ -39,6 +39,8 @@ type Member struct {
 	Name     string `json:"name"`
 	Role     string `json:"role"`
 	JoinedAt int64  `json:"joinedAt"`
+	// PromotedAt is when a co-host was last promoted; absent for others.
+	PromotedAt int64 `json:"promotedAt,omitempty"`
 }
 
 // Room.Timer and RoomSummary.Timer are null while the host is choosing the

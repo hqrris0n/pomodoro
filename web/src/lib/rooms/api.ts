@@ -1,7 +1,14 @@
 import type { Settings, TimerState } from '../types';
 
 export type Role = 'host' | 'cohost' | 'guest';
-export type Member = { id: string; name: string; role: Role; joinedAt: number };
+export type Member = {
+  id: string;
+  name: string;
+  role: Role;
+  joinedAt: number;
+  /** Epoch ms of the current promotion; co-hosts only. */
+  promotedAt?: number | null;
+};
 /** `timer` is null while the host is choosing the next order; `timerRev` grows with every timer change. */
 export type Room = {
   id: string;

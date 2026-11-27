@@ -1229,3 +1229,219 @@ func TestClaimWithoutReplacedSessionLeavesOldDevice(t *testing.T) {
 		t.Fatalf("members %+v", got.Members)
 	}
 }
+
+// --- host succession ---
+
+// succRoom makes host tok(1) with guests tok(2) "A" and tok(3) "B" joined in
+// that order, a second apart.
+func succRoom(t *testing.T) (*hub, *fakeClock, Room) {
+	t.Helper()
+	h, clk := newTestHub()
+	r := mustCreate(t, h, tok(1), "H")
+	clk.Advance(time.Second)
+	mustJoin(t, h, tok(2), r.ID, "A")
+	clk.Advance(time.Second)
+	mustJoin(t, h, tok(3), r.ID, "B")
+	clk.Advance(time.Second)
+	return h, clk, r
+}
+
+func setRole(t *testing.T, h *hub, clk *fakeClock, roomID, host, target, role string) {
+	t.Helper()
+	if _, err := h.SetRole(host, roomID, memberID(target), role); err != nil {
+		t.Fatal(err)
+	}
+	clk.Advance(time.Second)
+}
+
+func order(r Room) []string {
+	out := make([]string, len(r.Members))
+	for i, m := range r.Members {
+		out[i] = m.Name
+	}
+	return out
+}
+
+func wantOrder(t *testing.T, r Room, want ...string) {
+	t.Helper()
+	if got := order(r); !reflect.DeepEqual(got, want) {
+		t.Fatalf("members in order %v, want %v", got, want)
+	}
+}
+
+func TestSuccessionFollowsPromotionOrder(t *testing.T) {
+	h, clk, r := succRoom(t)
+	setRole(t, h, clk, r.ID, tok(1), tok(3), roleCohost)
+	setRole(t, h, clk, r.ID, tok(1), tok(2), roleCohost)
+	got, _ := h.room(r.ID)
+	wantOrder(t, got, "H", "B", "A")
+	if err := h.Leave(tok(1), r.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = h.room(r.ID)
+	wantOrder(t, got, "B", "A")
+	if roleOf(got, tok(3)) != roleHost || roleOf(got, tok(2)) != roleCohost {
+		t.Fatalf("members = %+v", got.Members)
+	}
+	if got.Members[0].PromotedAt != 0 {
+		t.Fatalf("new host still has promotedAt: %+v", got.Members[0])
+	}
+}
+
+func TestSuccessionRepromotedGoesToBack(t *testing.T) {
+	h, clk, r := succRoom(t)
+	setRole(t, h, clk, r.ID, tok(1), tok(3), roleCohost)
+	setRole(t, h, clk, r.ID, tok(1), tok(2), roleCohost)
+	setRole(t, h, clk, r.ID, tok(1), tok(3), roleGuest)
+	setRole(t, h, clk, r.ID, tok(1), tok(3), roleCohost)
+	got, _ := h.room(r.ID)
+	wantOrder(t, got, "H", "A", "B")
+	if err := h.Leave(tok(1), r.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = h.room(r.ID)
+	if roleOf(got, tok(2)) != roleHost || roleOf(got, tok(3)) != roleCohost {
+		t.Fatalf("members = %+v", got.Members)
+	}
+}
+
+func TestSuccessionSamePromotionTimestamp(t *testing.T) {
+	h, _, r := succRoom(t) // the clock does not move between the promotions
+	for _, n := range []int{3, 2} {
+		if _, err := h.SetRole(tok(1), r.ID, memberID(tok(n)), roleCohost); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := h.Leave(tok(1), r.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := h.room(r.ID)
+	if roleOf(got, tok(3)) != roleHost {
+		t.Fatalf("members = %+v", got.Members)
+	}
+}
+
+func TestSuccessionNoCohostsUsesJoinOrder(t *testing.T) {
+	h, _, r := succRoom(t)
+	if err := h.Leave(tok(1), r.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := h.room(r.ID)
+	wantOrder(t, got, "A", "B")
+	if roleOf(got, tok(2)) != roleHost {
+		t.Fatalf("members = %+v", got.Members)
+	}
+}
+
+func TestSuccessionDemotedCohostKeepsJoinPosition(t *testing.T) {
+	h, clk, r := succRoom(t)
+	clk.Advance(time.Second)
+	mustJoin(t, h, tok(4), r.ID, "C")
+	setRole(t, h, clk, r.ID, tok(1), tok(3), roleCohost)
+	setRole(t, h, clk, r.ID, tok(1), tok(3), roleGuest) // B is a guest again
+	setRole(t, h, clk, r.ID, tok(1), tok(4), roleCohost)
+	got, _ := h.room(r.ID)
+	wantOrder(t, got, "H", "C", "A", "B")
+	if m := got.Members[3]; m.Role != roleGuest || m.PromotedAt != 0 {
+		t.Fatalf("demoted member = %+v", m)
+	}
+	// With C gone as well, the guest queue is in join order: A before B.
+	if err := h.Leave(tok(1), r.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Leave(tok(4), r.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = h.room(r.ID)
+	wantOrder(t, got, "A", "B")
+	if roleOf(got, tok(2)) != roleHost {
+		t.Fatalf("members = %+v", got.Members)
+	}
+}
+
+func TestPromoteExistingCohostKeepsPlace(t *testing.T) {
+	h, clk, r := succRoom(t)
+	setRole(t, h, clk, r.ID, tok(1), tok(3), roleCohost)
+	setRole(t, h, clk, r.ID, tok(1), tok(2), roleCohost)
+	before, _ := h.room(r.ID)
+	setRole(t, h, clk, r.ID, tok(1), tok(3), roleCohost)
+	after, _ := h.room(r.ID)
+	if !reflect.DeepEqual(before.Members, after.Members) {
+		t.Fatalf("members %+v -> %+v", before.Members, after.Members)
+	}
+}
+
+func TestViewListsSuccessionOrder(t *testing.T) {
+	h, clk, r := succRoom(t)
+	cn, _ := h.Connect(tok(3), "")
+	setRole(t, h, clk, r.ID, tok(1), tok(3), roleCohost)
+	promoted := h.nowMs() - 1000
+	got, _ := h.room(r.ID)
+	wantOrder(t, got, "H", "B", "A")
+	for _, m := range got.Members {
+		if (m.Role == roleCohost) != (m.PromotedAt != 0) {
+			t.Fatalf("promotedAt on %+v", m)
+		}
+	}
+	if got.Members[1].PromotedAt != promoted {
+		t.Fatalf("promotedAt = %d, want %d", got.Members[1].PromotedAt, promoted)
+	}
+	ev := lastOf(drain(cn), "room")
+	if ev == nil {
+		t.Fatal("no room event")
+	}
+	ms := sub(ev.data, "room")["members"].([]any)
+	var names []string
+	for _, m := range ms {
+		names = append(names, m.(map[string]any)["name"].(string))
+	}
+	if !reflect.DeepEqual(names, []string{"H", "B", "A"}) {
+		t.Fatalf("event order %v", names)
+	}
+	host := ms[0].(map[string]any)
+	if _, ok := host["promotedAt"]; ok {
+		t.Fatalf("host has promotedAt: %v", host)
+	}
+}
+
+func TestSuccessionAfterGraceRemoval(t *testing.T) {
+	h, clk, r := succRoom(t)
+	cn, _ := h.Connect(tok(1), "")
+	h.Connect(tok(2), "")
+	h.Connect(tok(3), "")
+	setRole(t, h, clk, r.ID, tok(1), tok(3), roleCohost)
+	setRole(t, h, clk, r.ID, tok(1), tok(2), roleCohost)
+	h.Detach(cn)
+	clk.Advance(time.Minute)
+	h.Sweep()
+	got, _ := h.room(r.ID)
+	wantOrder(t, got, "B", "A")
+	if roleOf(got, tok(3)) != roleHost {
+		t.Fatalf("members = %+v", got.Members)
+	}
+}
+
+func TestHandoverKeepsPromotionOrder(t *testing.T) {
+	h, clk, r := succRoom(t)
+	ca, _ := h.Connect(tok(3), "B phone")
+	h.Connect(tok(2), "A")
+	h.Connect(tok(5), "B laptop")
+	setRole(t, h, clk, r.ID, tok(1), tok(3), roleCohost)
+	setRole(t, h, clk, r.ID, tok(1), tok(2), roleCohost)
+	drain(ca)
+	before, _ := h.room(r.ID)
+	h.ClaimAccount("Bee", 1, tok(3), false)
+	h.ClaimAccount("Bee", 2, tok(5), true)
+	got, _ := h.room(r.ID)
+	if got.Members[1].ID != memberID(tok(5)) || got.Members[1].PromotedAt != before.Members[1].PromotedAt {
+		t.Fatalf("members %+v, was %+v", got.Members, before.Members)
+	}
+	wantOrder(t, got, "H", "B", "A", "B phone")
+	if err := h.Leave(tok(1), r.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = h.room(r.ID)
+	if roleOf(got, tok(5)) != roleHost || roleOf(got, tok(2)) != roleCohost {
+		t.Fatalf("members = %+v", got.Members)
+	}
+}

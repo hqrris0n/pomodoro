@@ -57,12 +57,16 @@ type SavedMix = {
   name: string;                    // 1 .. 30 chars
   mix: Record<string, number>;     // as above
 };
-type Member = { id: string; name: string; role: 'host' | 'cohost' | 'guest'; joinedAt: number };
+type Member = {
+  id: string; name: string; role: 'host' | 'cohost' | 'guest';
+  joinedAt: number;
+  promotedAt?: number | null; // epoch ms of the current promotion; co-hosts only, absent otherwise
+};
 type Room = {
   id: string; settings: Settings;
   timer: TimerState | null; // null between timers, see below
   timerRev: number;         // starts at 1, +1 every time the timer is replaced or cleared
-  members: Member[];
+  members: Member[];       // in succession order: host, co-hosts by promotion, guests by join
 };
 type RoomSummary = {
   id: string; ownerName: string; memberCount: number; drinkId: string;
@@ -343,10 +347,13 @@ reach the server in.
 
 1. A member is present while their SSE stream is open. When it closes they
    have a 30s grace period to reconnect, then they are removed.
-2. When the host leaves or is removed, the co-host with the earliest
-   `joinedAt` becomes host; if there is no co-host, the guest with the earliest
-   `joinedAt`. The timer is untouched, including a cleared one: the new host
-   orders the next timer. Clearing the timer is not leaving.
+2. When the host leaves or is removed, the co-host promoted earliest
+   (smallest `promotedAt`) becomes host; if there is no co-host, the guest with
+   the earliest `joinedAt`. A co-host who is demoted and promoted again goes to
+   the back of the co-host queue; a demoted co-host rejoins the guest queue at
+   their original join position; promoting a co-host again changes nothing. A
+   login handover keeps the seat's place in both queues. The timer is
+   untouched, including a cleared one: the new host orders the next timer. Clearing the timer is not leaving.
 3. A room with no members is deleted.
 4. A room whose timer has been done for 10 minutes is deleted; its members
    receive `room: null`.
@@ -378,3 +385,15 @@ reach the server in.
   Rooms with no timer are not offered in the list of timers to join.
 - If the server is unreachable the app behaves as a solo timer and retries
   the stream with backoff (2s doubling to 30s).
+
+## Concurrency
+
+### Host succession
+
+Two queues decide who hosts next: co-hosts in the order they were promoted,
+then guests in the order they joined. The choice is made inside the same
+locked step that removes the leaving host, so a room never has zero or two
+hosts, even when joins, role changes and leaves arrive at the same moment.
+Promotions are ordered by a counter shared by the whole server, not by
+`promotedAt`, so two promotions in the same millisecond still have a fixed
+order.

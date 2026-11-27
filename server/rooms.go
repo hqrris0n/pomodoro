@@ -59,6 +59,7 @@ type hub struct {
 	rooms     map[string]*room
 	clients   map[string]*client // keyed by token; removed by sweep when idle
 	nextSeq   uint64
+	promoSeq  uint64 // last promotion number handed out; see member.promoSeq
 	streams   int
 	lastRooms []byte // last broadcast room list, to skip no-op broadcasts
 	dirty     map[*client]struct{}
@@ -80,6 +81,11 @@ type member struct {
 	name     string
 	role     string
 	joinedAt int64
+	// promoSeq orders co-hosts by promotion: it is the hub-wide counter value
+	// at the current promotion, 0 for the host and guests. promotedAt is the
+	// same moment in epoch ms, for the view.
+	promoSeq   uint64
+	promotedAt int64
 }
 
 // client is everything we know about one token. It outlives its stream so a
@@ -187,9 +193,9 @@ func frame(event string, v any) []byte {
 func (h *hub) nowMs() int64 { return h.now().UnixMilli() }
 
 func (r *room) view() Room {
-	ms := make([]Member, len(r.members))
-	for i, m := range r.members {
-		ms[i] = Member{ID: m.c.id, Name: m.name, Role: m.role, JoinedAt: m.joinedAt}
+	ms := make([]Member, 0, len(r.members))
+	for _, m := range r.succession() {
+		ms = append(ms, Member{ID: m.c.id, Name: m.name, Role: m.role, JoinedAt: m.joinedAt, PromotedAt: m.promotedAt})
 	}
 	return Room{ID: r.id, Settings: r.settings, Timer: r.timerView(), TimerRev: r.timerRev, Members: ms}
 }
@@ -201,6 +207,32 @@ func (r *room) timerView() *Timer {
 	}
 	t := *r.timer
 	return &t
+}
+
+// succession lists the members in the order they would take over as host:
+// the host, then co-hosts by promotion, then guests by join order. members
+// itself stays in join order.
+func (r *room) succession() []*member {
+	out := make([]*member, 0, len(r.members))
+	for _, m := range r.members {
+		if m.role == roleHost {
+			out = append(out, m)
+		}
+	}
+	var co []*member
+	for _, m := range r.members {
+		if m.role == roleCohost {
+			co = append(co, m)
+		}
+	}
+	sort.SliceStable(co, func(i, j int) bool { return co[i].promoSeq < co[j].promoSeq })
+	out = append(out, co...)
+	for _, m := range r.members {
+		if m.role == roleGuest {
+			out = append(out, m)
+		}
+	}
+	return out
 }
 
 func (r *room) hostName() string {
@@ -381,7 +413,8 @@ func (h *hub) leaveLocked(c *client) {
 		return
 	}
 	if !hasHost(r) {
-		nextHost(r).role = roleHost
+		m := nextHost(r)
+		m.role, m.promoSeq, m.promotedAt = roleHost, 0, 0
 	}
 	h.touchAll(r)
 }
@@ -395,13 +428,17 @@ func hasHost(r *room) bool {
 	return false
 }
 
-// nextHost picks the earliest-joined co-host, else the earliest-joined guest.
-// members is in join order and must be non-empty.
+// nextHost picks the co-host promoted earliest, else the earliest-joined
+// guest. members is in join order and must be non-empty.
 func nextHost(r *room) *member {
+	var best *member
 	for _, m := range r.members {
-		if m.role == roleCohost {
-			return m
+		if m.role == roleCohost && (best == nil || m.promoSeq < best.promoSeq) {
+			best = m
 		}
+	}
+	if best != nil {
+		return best
 	}
 	return r.members[0]
 }
@@ -603,7 +640,15 @@ func (h *hub) SetRole(token, roomID, targetID, role string) (Room, error) {
 			if m.role == roleHost {
 				return Room{}, badRequest("the host's role cannot be changed")
 			}
-			m.role = role
+			if role != m.role {
+				m.role = role
+				if role == roleCohost {
+					h.promoSeq++
+					m.promoSeq, m.promotedAt = h.promoSeq, h.nowMs()
+				} else {
+					m.promoSeq, m.promotedAt = 0, 0
+				}
+			}
 			h.touchAll(r)
 			h.publish()
 			return r.view(), nil
