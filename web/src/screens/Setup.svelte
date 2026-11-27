@@ -46,7 +46,7 @@
 <style>
   .ticket {
     position: relative;
-    --order-for-w: 216px;
+    --order-for-w: 234px; /* wide enough for Log in and Sign up side by side */
     margin: var(--s6) var(--s2) var(--s6);
     padding: 0;
   }
@@ -77,18 +77,23 @@
     text-align: left;
   }
 
-  /* The Order for card clips to the ticket's top-right corner; the heading wraps beside it. */
+  /* The Order for card clips to the ticket's top-right corner; the heading wraps beside it.
+     On narrow windows it reaches past the ticket only as far as the ticket's side margin
+     allows, so the tilted card never pokes out of the window. When the heading's longest
+     word and the card do not fit side by side (the narrowest phones), the card moves below
+     the heading, still on the right. */
   .head {
     display: flex;
+    flex-wrap: wrap;
     align-items: flex-start;
-    justify-content: space-between;
+    justify-content: flex-end;
     gap: var(--s2);
-    margin: calc(-1 * (var(--s5) + var(--s1))) calc(-1 * (var(--s4) + var(--s1))) 0 0;
+    margin: calc(-1 * (var(--s5) + var(--s1))) calc(-1 * var(--s4)) 0 0;
   }
 
   h1 {
     flex: 1;
-    min-width: 0;
+    min-width: min-content;
     margin-top: calc(var(--s5) + var(--s1));
     font-size: var(--t4);
   }

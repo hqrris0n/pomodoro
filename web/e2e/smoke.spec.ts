@@ -72,6 +72,7 @@ test.describe('timer layout', () => {
     await page.getByRole('button', { name: 'Start brewing' }).click();
     await expect(page.getByRole('timer')).toBeVisible();
     const scene = page.locator('.column .scene');
+    await expect(scene.locator(':scope > *')).toBeVisible(); // drinks loaded
     const running = await scene.boundingBox();
 
     // Backdate the saved timer so it finished long ago, then reload into the done state.
@@ -82,6 +83,7 @@ test.describe('timer layout', () => {
     });
     await page.reload();
     await expect(page.getByRole('heading', { name: /is ready/ })).toBeVisible();
+    await expect(scene.locator(':scope > *')).toBeVisible();
     const done = await scene.boundingBox();
     expect(Math.abs(done!.y - running!.y)).toBeLessThanOrEqual(1);
   });
@@ -110,6 +112,7 @@ test.describe('timer layout', () => {
       await expect(page.getByRole('timer')).toBeVisible();
       await expect(page.locator('.head time')).toBeVisible();
       const scene = page.locator('.column .scene');
+      await expect(scene.locator(':scope > *')).toBeVisible(); // drinks loaded
       const running = await scene.boundingBox();
 
       await page.evaluate(() => {
@@ -120,6 +123,7 @@ test.describe('timer layout', () => {
       await page.reload();
       await expect(page.getByRole('heading', { name: /is ready/ })).toBeVisible();
       await expect(page.locator('.head time')).toBeVisible();
+      await expect(scene.locator(':scope > *')).toBeVisible();
       const done = await scene.boundingBox();
       expect(Math.abs(done!.y - running!.y)).toBeLessThanOrEqual(1);
     });
@@ -181,4 +185,52 @@ test('a saved mix in Settings loads from its name and opens its background picke
 
   await pic.click();
   await expect(picker).toBeHidden();
+});
+
+test('Escape in a mix rename box or background picker closes only that, not Settings', async ({
+  page,
+}) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Settings' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Settings' });
+
+  await dialog.getByRole('button', { name: 'Rename Rainy day' }).click();
+  const rename = dialog.getByRole('textbox', { name: 'New name for Rainy day' });
+  await rename.fill('Storm');
+  await rename.press('Escape');
+  await expect(rename).toBeHidden();
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole('button', { name: 'Rainy day', exact: true })).toBeVisible();
+
+  await dialog.getByRole('button', { name: 'Backgrounds for Rainy day' }).click();
+  const picker = page.getByRole('group', { name: 'Backgrounds for Rainy day' });
+  await expect(picker).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(picker).toBeHidden();
+  await expect(dialog).toBeVisible();
+
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
+});
+
+test('the drink picked on the order ticket is the one brewed', async ({ page }) => {
+  await page.route('**/api/**', (route) => route.abort());
+  await page.goto('/');
+  const matcha = page.getByRole('radio', { name: 'Matcha latte' });
+  await matcha.check();
+  await expect(matcha).toBeChecked();
+  await expect(page.locator('.picker .current')).toHaveText('Matcha latte');
+
+  // The choice survives a reload, then follows the timer to the end.
+  await page.reload();
+  await expect(page.getByRole('radio', { name: 'Matcha latte' })).toBeChecked();
+  await page.getByRole('button', { name: 'Start brewing' }).click();
+  await expect(page.getByRole('timer')).toBeVisible();
+  await page.evaluate(() => {
+    const t = JSON.parse(localStorage.getItem('cafe:timer')!);
+    t.anchorAt -= 4 * 3600_000;
+    localStorage.setItem('cafe:timer', JSON.stringify(t));
+  });
+  await page.reload();
+  await expect(page.getByRole('heading', { name: 'Your matcha latte is ready' })).toBeVisible();
 });

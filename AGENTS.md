@@ -45,3 +45,25 @@ Server (from `server/`; Go 1.27, or the `golang:1.27` image): `gofmt -l .`,
 - Persistent browser state goes only through `lib/storage.ts`.
 - Colours, spacing and fonts only via CSS variables from `styles/tokens.css`.
 - Design rules: `docs/design.md`. Server protocol: `docs/protocol.md`.
+
+## Testing
+
+- Every feature and bug fix ships with tests that would fail without it. For a bug,
+  write the failing test first.
+- Test behaviour once: logic, server rules and concurrency (races, sessions, rooms)
+  need one run, not one per screen size.
+- Test layout at every size where it differs: anything that looks different on phones
+  gets an e2e check in `web/e2e/layout.spec.ts`, which runs on both Playwright projects
+  and down to 320px wide. Check for cut-off content, sideways scrolling, overlaps and
+  wrapped button labels.
+- Keep the screenshot baselines in `web/e2e/visual.spec.ts` current. After an intended
+  visual change, look at the diff, then run `npm run e2e -- visual --update-snapshots`.
+  The baselines are macOS ones; Linux or CI needs its own set.
+- Do not delete or skip a test to make a change pass; update it to the new spec and
+  say so in the commit.
+- Wait for what a measurement depends on (fonts, drinks, the scene) before measuring,
+  so a test fails only for a real reason.
+- Before calling a feature done, run the full check: the web commands above,
+  `go test -race ./...` in `server/` (or in the `golang:1.27` image), then
+  `npm run e2e` with `E2E_SERVER` set to a container of the freshly built image, so the
+  account and room tests run too.

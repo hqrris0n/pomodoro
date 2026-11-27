@@ -64,16 +64,18 @@
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
+      // Captured before Settings sees it, so Escape closes only the picker.
+      e.stopPropagation();
       pickerId = null;
       void tick().then(() => pickerButton(id)?.focus());
     };
     window.addEventListener('pointerdown', onDown);
-    window.addEventListener('keydown', onKey);
+    window.addEventListener('keydown', onKey, true);
     window.addEventListener('resize', placePicker);
     window.addEventListener('scroll', placePicker, true);
     return () => {
       window.removeEventListener('pointerdown', onDown);
-      window.removeEventListener('keydown', onKey);
+      window.removeEventListener('keydown', onKey, true);
       window.removeEventListener('resize', placePicker);
       window.removeEventListener('scroll', placePicker, true);
     };
@@ -154,6 +156,7 @@
       commitRename(id);
     } else if (e.key === 'Escape') {
       e.preventDefault();
+      e.stopPropagation(); // cancel the rename only; Settings stays open
       stopRename();
     }
   }

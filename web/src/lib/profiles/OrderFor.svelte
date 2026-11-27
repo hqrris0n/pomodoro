@@ -250,6 +250,8 @@
     cursor: progress;
   }
 
+  /* Side by side, each label on one line: tighter padding, and Log in at the same type size
+     as Sign up (its fill marks it as the main button), so both fit the card's width. */
   .actions {
     display: flex;
     gap: var(--s1);
@@ -257,6 +259,12 @@
 
   .actions .btn {
     flex: 1;
+    padding-inline: var(--px);
+    white-space: nowrap;
+  }
+
+  .actions .btn.primary {
+    font-size: var(--t1);
   }
 
   .icon {
